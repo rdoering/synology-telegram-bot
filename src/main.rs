@@ -95,22 +95,23 @@ fn create_main_menu() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(keyboard)
 }
 
-// Function to create the SSH menu keyboard
-fn create_ssh_menu() -> InlineKeyboardMarkup {
+// Function to create the SSH menu keyboard based on current status
+fn create_ssh_menu(ssh_enabled: bool) -> InlineKeyboardMarkup {
     let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
 
-    // SSH On button
-    let ssh_on_button = InlineKeyboardButton::callback("✅ Enable SSH", CALLBACK_SSH_ON);
-
-    // SSH Off button
-    let ssh_off_button = InlineKeyboardButton::callback("❌ Disable SSH", CALLBACK_SSH_OFF);
+    // Add the appropriate button based on current SSH status
+    if ssh_enabled {
+        // SSH is enabled, show disable option
+        let ssh_off_button = InlineKeyboardButton::callback("❌ Disable SSH", CALLBACK_SSH_OFF);
+        keyboard.push(vec![ssh_off_button]);
+    } else {
+        // SSH is disabled, show enable option
+        let ssh_on_button = InlineKeyboardButton::callback("✅ Enable SSH", CALLBACK_SSH_ON);
+        keyboard.push(vec![ssh_on_button]);
+    }
 
     // Back button
     let back_button = InlineKeyboardButton::callback("🔙 Back to Main Menu", CALLBACK_BACK);
-
-    // Add buttons to keyboard
-    keyboard.push(vec![ssh_on_button]);
-    keyboard.push(vec![ssh_off_button]);
     keyboard.push(vec![back_button]);
 
     InlineKeyboardMarkup::new(keyboard)
@@ -262,15 +263,52 @@ async fn callback_handler(
                     ).await?;
                 }
                 CALLBACK_SSH_MENU => {
-                    // Show SSH menu
-                    let keyboard = create_ssh_menu();
-                    bot.edit_message_text(
-                        chat_id,
-                        message.id,
-                        "SSH Control Menu:"
-                    )
-                    .reply_markup(keyboard)
-                    .await?;
+                    // Get current SSH status before showing the menu
+                    let mut config = synology_config.lock().await;
+
+                    // Ensure logged in
+                    match config.ensure_logged_in().await {
+                        Ok(true) => {
+                            // Now we're logged in, proceed with getting SSH status
+                            if let Some(client) = &mut config.client {
+                                match client.get_ssh_status().await {
+                                    Ok(status) => {
+                                        // Create SSH menu based on current status
+                                        let keyboard = create_ssh_menu(status);
+                                        let status_text = if status { "enabled" } else { "disabled" };
+
+                                        bot.edit_message_text(
+                                            chat_id,
+                                            message.id,
+                                            format!("SSH Control Menu (currently {})", status_text)
+                                        )
+                                        .reply_markup(keyboard)
+                                        .await?;
+                                    },
+                                    Err(e) => {
+                                        error!("Failed to get SSH status: {}", e);
+                                        bot.answer_callback_query(q.id)
+                                            .text("Failed to get SSH status")
+                                            .show_alert(true)
+                                            .await?;
+                                    }
+                                }
+                            }
+                        },
+                        Ok(false) => {
+                            bot.answer_callback_query(q.id)
+                                .text("Could not login to Synology NAS. Please check your SYNOLOGY_USERNAME and SYNOLOGY_PASSWORD environment variables.")
+                                .show_alert(true)
+                                .await?;
+                        },
+                        Err(e) => {
+                            error!("Failed to login: {}", e);
+                            bot.answer_callback_query(q.id)
+                                .text("Failed to login to Synology NAS")
+                                .show_alert(true)
+                                .await?;
+                        }
+                    }
                 }
                 CALLBACK_SSH_ON => {
                     // Enable SSH

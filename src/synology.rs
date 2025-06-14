@@ -1,6 +1,8 @@
 use reqwest::{Client, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
 use log::{info, error, debug};
+use std::fmt;
+use std::error::Error;
 
 // Synology API endpoints
 const AUTH_ENDPOINT: &str = "/entry.cgi";
@@ -21,6 +23,78 @@ pub struct SynologyError {
     pub error_details: Option<Vec<String>>,
 }
 
+impl SynologyError {
+    pub fn get_error_description(&self) -> &str {
+        match self.code {
+            100 => "Unknown error.",
+            101 => "No parameter of API, method or version.",
+            102 => "The requested API does not exist.",
+            103 => "The requested method does not exist.",
+            104 => "The requested version does not support the functionality.",
+            105 => "The logged in session does not have permission.",
+            106 => "Session timeout.",
+            107 => "Session interrupted by duplicated login.",
+            108 => "Failed to upload the file.",
+            109 => "The network connection is unstable or the system is busy.",
+            110 => "The network connection is unstable or the system is busy.",
+            111 => "The network connection is unstable or the system is busy.",
+            112 => "Preserve for other purpose.",
+            113 => "Preserve for other purpose.",
+            114 => "Lost parameters for this API.",
+            115 => "Not allowed to upload a file.",
+            116 => "Not allowed to perform for a demo site.",
+            117 => "The network connection is unstable or the system is busy.",
+            118 => "The network connection is unstable or the system is busy.",
+            119 => "Invalid session.",
+            150 => "Request source IP does not match the login IP.",
+            _ => {
+                if self.code >= 120 && self.code <= 149 {
+                    "Preserve for other purpose."
+                } else {
+                    "Unknown error code."
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum SynologyClientError {
+    /// Error from the reqwest library
+    Reqwest(ReqwestError),
+    /// Error from the Synology API
+    Synology(SynologyError),
+    /// Generic error with a message
+    Generic(String),
+    /// Login failed
+    LoginFailed,
+}
+
+impl fmt::Display for SynologyClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SynologyClientError::Reqwest(err) => write!(f, "HTTP error: {}", err),
+            SynologyClientError::Synology(err) => write!(f, "Synology API error: {} - {}", err.code, err.get_error_description()),
+            SynologyClientError::Generic(msg) => write!(f, "{}", msg),
+            SynologyClientError::LoginFailed => write!(f, "Login failed"),
+        }
+    }
+}
+
+impl Error for SynologyClientError {}
+
+impl From<ReqwestError> for SynologyClientError {
+    fn from(err: ReqwestError) -> Self {
+        SynologyClientError::Reqwest(err)
+    }
+}
+
+impl From<SynologyError> for SynologyClientError {
+    fn from(err: SynologyError) -> Self {
+        SynologyClientError::Synology(err)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthData {
     pub sid: String,
@@ -31,6 +105,12 @@ pub struct FileListData {
     pub files: Vec<FileInfo>,
     pub total: i32,
     pub offset: i32,
+}
+
+impl From<FileListData> for Vec<FileInfo> {
+    fn from(data: FileListData) -> Self {
+        data.files
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,7 +131,23 @@ pub struct FileTime {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServiceStatusData {
+    #[serde(rename = "service_status", default)]
     pub service_status: bool,
+
+    // Alternative field names that might be in the response
+    #[serde(rename = "enable_ssh", alias = "enable", skip_serializing, default)]
+    pub enable_ssh: Option<bool>,
+
+    #[serde(rename = "status", alias = "ssh_status", skip_serializing, default)]
+    pub status: Option<bool>,
+}
+
+impl From<ServiceStatusData> for bool {
+    fn from(data: ServiceStatusData) -> Self {
+        data.service_status 
+            || data.enable_ssh.unwrap_or(false) 
+            || data.status.unwrap_or(false)
+    }
 }
 
 pub struct SynologyClient {
@@ -73,20 +169,26 @@ impl SynologyClient {
         }
     }
 
-    pub(crate) async fn login(&mut self) -> Result<(), ReqwestError> {
+    pub(crate) async fn login(&mut self) -> Result<(), SynologyClientError> {
         let url = self.get_url(AUTH_ENDPOINT);
 
         info!("Logging in to Synology NAS...");
 
+        // Create login parameters (only define once)
+        let params = [
+            ("api", "SYNO.API.Auth"),
+            ("version", "3"),
+            ("method", "login"),
+            ("account", &self.username),
+            ("passwd", &self.password),
+        ];
+
+        // Log the request using the helper method with password masking
+        self.log_request(&url, &params, &["passwd"]);
+
         let response = self.client
             .get(&url)
-            .query(&[
-                ("api", "SYNO.API.Auth"),
-                ("version", "3"),
-                ("method", "login"),
-                ("account", &self.username),
-                ("passwd", &self.password),
-            ])
+            .query(&params)
             .send()
             .await?
             .error_for_status()?;
@@ -103,20 +205,30 @@ impl SynologyClient {
             }
         }
 
-        if let Some(error) = auth_response.error {
-            error!("Login failed with error code: {}", error.code);
-        } else {
-            error!("Login failed with unknown error");
-        }
-
-        Ok(())
+        self.handle_error_response(auth_response.error, "Login failed")
     }
 
     fn get_url(&mut self, endpoint: &str) -> String {
         format!("{}/webapi{}", self.base_url, endpoint)
     }
 
-    async fn ensure_login(&mut self) -> Result<bool, ReqwestError> {
+    // Helper method to log requests with optional parameter masking
+    fn log_request(&self, url: &str, params: &[(&str, &str)], mask_params: &[&str]) {
+        // Create a copy of params with masked values for sensitive parameters
+        let masked_params: Vec<(&str, &str)> = params.iter()
+            .map(|(key, value)| {
+                if mask_params.contains(key) {
+                    (*key, "********")
+                } else {
+                    (*key, *value)
+                }
+            })
+            .collect();
+
+        debug!("Sending Synology API request to: {} with params: {:?}", url, masked_params);
+    }
+
+    async fn ensure_login(&mut self) -> Result<bool, SynologyClientError> {
         if self.sid.is_none() {
             debug!("Not logged in. Attempting automatic login...");
             self.login().await?;
@@ -124,116 +236,124 @@ impl SynologyClient {
         Ok(self.sid.is_some())
     }
 
-    pub async fn list_files(&mut self, folder_path: &str) -> Result<Vec<FileInfo>, ReqwestError> {
+    // Generic method to handle API requests
+    async fn api_request<T, R>(
+        &mut self, 
+        endpoint: &str, 
+        api: &str, 
+        version: &str, 
+        method: &str, 
+        additional_params: Vec<(&str, &str)>,
+        operation_name: &str
+    ) -> Result<R, SynologyClientError> 
+    where 
+        T: for<'de> Deserialize<'de>,
+        R: From<T>
+    {
         if !self.ensure_login().await? {
-            error!("Login attempt failed. Cannot list files.");
-            return Ok(Vec::new());
+            error!("Login attempt failed. Cannot {}.", operation_name);
+            return Err(SynologyClientError::LoginFailed);
         }
 
-        let url = self.get_url(FILESTATION_ENDPOINT);
+        let url = self.get_url(endpoint);
 
+        // Build base query parameters
+        let mut params = vec![
+            ("api", api),
+            ("version", version),
+            ("method", method),
+            ("_sid", self.sid.as_ref().unwrap()),
+        ];
+        params.extend(additional_params);
+
+        // Log the request using the helper method (no sensitive params to mask)
+        let builder = self.client
+            .get(&url)
+            .query(&params);
+        debug!("Synology request {:?}", builder);
+
+        // Send request
+        let response = builder
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let body_text = response.text().await?;
+        debug!("Response body: {}", body_text);
+
+        // Parse response
+        let api_response: SynologyResponse<T> = match serde_json::from_str(&body_text) {
+            Ok(response) => response,
+            Err(e) => {
+                error!("Failed to parse response: {}", e);
+                return Err(SynologyClientError::Generic(format!("JSON parsing error: {}", e)));
+            }
+        };
+
+        if api_response.success {
+            if let Some(data) = api_response.data {
+                return Ok(data.into());
+            }
+        }
+
+        self.handle_error_response(api_response.error, &format!("{} failed", operation_name))
+    }
+
+    // Helper method to handle error responses
+    fn handle_error_response<T>(&self, error: Option<SynologyError>, operation: &str) -> Result<T, SynologyClientError> {
+        if let Some(error) = error {
+            let error_msg = format!("{} with error code: {} - {}", operation, error.code, error.get_error_description());
+            error!("{}", error_msg);
+            Err(SynologyClientError::Synology(error))
+        } else {
+            let error_msg = format!("{} with unknown error", operation);
+            error!("{}", error_msg);
+            Err(SynologyClientError::Generic(error_msg.to_string()))
+        }
+    }
+
+    pub async fn list_files(&mut self, folder_path: &str) -> Result<Vec<FileInfo>, SynologyClientError> {
         info!("Listing files in folder: {}", folder_path);
 
-        let response = self.client
-            .get(&url)
-            .query(&[
-                ("api", "SYNO.FileStation.List"),
-                ("version", "2"),
-                ("method", "list"),
-                ("folder_path", folder_path),
-                ("_sid", self.sid.as_ref().unwrap()),
-            ])
-            .send()
-            .await?;
-
-        let file_list_response: SynologyResponse<FileListData> = response.json().await?;
-
-        if file_list_response.success {
-            if let Some(data) = file_list_response.data {
-                return Ok(data.files);
-            }
-        }
-
-        if let Some(error) = file_list_response.error {
-            error!("List files failed with error code: {}", error.code);
-        } else {
-            error!("List files failed with unknown error");
-        }
-
-        Ok(Vec::new())
+        self.api_request::<FileListData, Vec<FileInfo>>(
+            FILESTATION_ENDPOINT,
+            "SYNO.FileStation.List",
+            "2",
+            "list",
+            vec![("folder_path", folder_path)],
+            &format!("list files in {}", folder_path)
+        ).await
     }
 
-    pub async fn get_ssh_status(&mut self) -> Result<bool, ReqwestError> {
-        if !self.ensure_login().await? {
-            error!("Login attempt failed. Cannot get SSH status.");
-            return Ok(false);
-        }
+    pub async fn get_ssh_status(&mut self) -> Result<bool, SynologyClientError> {
+        let result = self.api_request::<ServiceStatusData, bool>(
+            TERMINAL_ENDPOINT,
+            "SYNO.Core.Terminal",
+            "1",
+            "get",
+            vec![],
+            "get SSH service status"
+        ).await?;
 
-        let url = format!("{}{}", self.base_url, TERMINAL_ENDPOINT);
-
-        info!("Getting SSH service status...");
-
-        let response = self.client
-            .get(&url)
-            .query(&[
-                ("api", "SYNO.Core.Terminal"),
-                ("version", "1"),
-                ("method", "get"),
-                ("_sid", self.sid.as_ref().unwrap()),
-            ])
-            .send()
-            .await?;
-
-        let status_response: SynologyResponse<ServiceStatusData> = response.json().await?;
-
-        if status_response.success {
-            if let Some(data) = status_response.data {
-                info!("SSH service status: {}", if data.service_status { "enabled" } else { "disabled" });
-                return Ok(data.service_status);
-            }
-        }
-
-        if let Some(error) = status_response.error {
-            error!("Get SSH status failed with error code: {}", error.code);
-        } else {
-            error!("Get SSH status failed with unknown error");
-        }
-
-        Ok(false)
+        info!("SSH service status: {}", if result { "enabled" } else { "disabled" });
+        Ok(result)
     }
 
-    pub async fn toggle_ssh(&mut self, enable: bool) -> Result<(), ReqwestError> {
-        if !self.ensure_login().await? {
-            error!("Login attempt failed. Cannot toggle SSH.");
-            return Ok(());
-        }
-
-        let url = self.get_url(TERMINAL_ENDPOINT);
-
+    pub async fn toggle_ssh(&mut self, enable: bool) -> Result<(), SynologyClientError> {
         info!("{} SSH service...", if enable { "Enabling" } else { "Disabling" });
 
-        let response = self.client
-            .get(&url)
-            .query(&[
-                ("api", "SYNO.Core.Terminal"),
-                ("version", "1"),
-                ("method", "set"),
-                ("service_status", if enable { "true" } else { "false" }),
-                ("_sid", self.sid.as_ref().unwrap()),
-            ])
-            .send()
-            .await?;
+        let enable_ssh_new_state = if enable { "true" } else { "false" };
 
-        let toggle_response: SynologyResponse<()> = response.json().await?;
+        let result = self.api_request::<(), ()>(
+            TERMINAL_ENDPOINT,
+            "SYNO.Core.Terminal",
+            "1",
+            "set",
+            vec![("enable_ssh", enable_ssh_new_state)],
+            &format!("{} SSH service", if enable { "enable" } else { "disable" })
+        ).await?;
 
-        if toggle_response.success {
-            info!("Successfully {} SSH service", if enable { "enabled" } else { "disabled" });
-        } else if let Some(error) = toggle_response.error {
-            error!("Toggle SSH failed with error code: {}", error.code);
-        } else {
-            error!("Toggle SSH failed with unknown error");
-        }
-
-        Ok(())
+        info!("Successfully {} SSH service", if enable { "enabled" } else { "disabled" });
+        Ok(result)
     }
 }
