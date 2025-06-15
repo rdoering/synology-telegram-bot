@@ -138,13 +138,16 @@ enum Command {
     Start,
     #[command(description = "Check if the bot is running.")]
     Ping,
+    #[command(description = "Get SSH status or enable/disable SSH. Usage: /ssh [on|off]")]
+    Ssh(String),
 }
 
 // Handle commands from BotCommands enum
 async fn answer_command(
     bot: Bot,
     msg: Message,
-    cmd: Command
+    cmd: Command,
+    synology_config: Arc<Mutex<SynologyConfig>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Check if the chat is authorized
     if !is_authorized_chat(msg.chat.id.0) {
@@ -166,8 +169,6 @@ async fn answer_command(
             let mut help_text = Command::descriptions().to_string();
             help_text.push_str("\n\nInteractive Menu:\n");
             help_text.push_str("Use /start to display the interactive menu for easier navigation.\n");
-            help_text.push_str("\nAdditional commands:\n");
-            help_text.push_str("/ssh [on|off] - Get SSH status or enable/disable SSH\n");
             help_text.push_str("\nConfiguration:\n");
             help_text.push_str("Synology settings must be configured via environment variables:\n");
             help_text.push_str("- SYNOLOGY_NAS_BASE_URL: Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)\n");
@@ -203,6 +204,89 @@ async fn answer_command(
         }
         Command::Ping => {
             bot.send_message(msg.chat.id, "Pong! Bot is running.".to_string()).await?;
+        }
+        Command::Ssh(arg) => {
+            // Get the synology config
+            let mut config = synology_config.lock().await;
+
+            // Ensure logged in
+            match config.ensure_logged_in().await {
+                Ok(true) => {
+                    // Now we're logged in, proceed with SSH operations
+                    if let Some(client) = &mut config.client {
+                        if arg.is_empty() {
+                            // Just /ssh - get status
+                            match client.get_ssh_status().await {
+                                Ok(status) => {
+                                    let status_text = if status { "enabled" } else { "disabled" };
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("SSH service is currently {}", status_text)
+                                    ).await?;
+                                },
+                                Err(e) => {
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("Failed to get SSH status: {}", e)
+                                    ).await?;
+                                }
+                            }
+                        } else {
+                            // /ssh on or /ssh off - set status
+                            let command = arg.to_lowercase();
+
+                            if command == "on" || command == "enable" {
+                                match client.toggle_ssh(true).await {
+                                    Ok(_) => {
+                                        bot.send_message(
+                                            msg.chat.id,
+                                            "SSH service has been enabled"
+                                        ).await?;
+                                    },
+                                    Err(e) => {
+                                        bot.send_message(
+                                            msg.chat.id,
+                                            format!("Failed to enable SSH service: {}", e)
+                                        ).await?;
+                                    }
+                                }
+                            } else if command == "off" || command == "disable" {
+                                match client.toggle_ssh(false).await {
+                                    Ok(_) => {
+                                        bot.send_message(
+                                            msg.chat.id,
+                                            "SSH service has been disabled"
+                                        ).await?;
+                                    },
+                                    Err(e) => {
+                                        bot.send_message(
+                                            msg.chat.id,
+                                            format!("Failed to disable SSH service: {}", e)
+                                        ).await?;
+                                    }
+                                }
+                            } else {
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Usage: /ssh [on|off] - Get SSH status or enable/disable SSH"
+                                ).await?;
+                            }
+                        }
+                    }
+                },
+                Ok(false) => {
+                    bot.send_message(
+                        msg.chat.id, 
+                        "Could not login to Synology NAS. Please check your SYNOLOGY_USERNAME and SYNOLOGY_PASSWORD environment variables."
+                    ).await?;
+                },
+                Err(e) => {
+                    bot.send_message(
+                        msg.chat.id, 
+                        format!("Failed to login to Synology NAS: {}", e)
+                    ).await?;
+                }
+            }
         }
     }
     Ok(())
@@ -467,7 +551,7 @@ async fn message_handler(
     if let Some(text) = msg.text() {
         // Try to parse as a command
         if let Ok(command) = Command::parse(text, "synology_bot") {
-            return answer_command(bot.clone(), msg.clone(), command).await;
+            return answer_command(bot.clone(), msg.clone(), command, synology_config.clone()).await;
         }
 
         // Handle custom commands
@@ -602,6 +686,12 @@ async fn main() {
         .menu_button(menu_button)
         .await
         .expect("Failed to set chat menu button");
+
+    // Register commands with Telegram to make them appear in the menu
+    info!("Registering commands with Telegram...");
+    bot.set_my_commands(Command::bot_commands())
+        .await
+        .expect("Failed to register commands");
 
     // Create a message handler
     let default_handler = Update::filter_message().branch(
