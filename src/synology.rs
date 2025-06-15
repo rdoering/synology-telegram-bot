@@ -7,7 +7,6 @@ use std::net::{IpAddr, Ipv4Addr};
 
 // Synology API endpoints
 const AUTH_ENDPOINT: &str = "/entry.cgi";
-const FILESTATION_ENDPOINT: &str = "/entry.cgi";
 const TERMINAL_ENDPOINT: &str = "/entry.cgi";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -171,7 +170,6 @@ pub struct SynologyClient {
     username: String,
     password: String,
     sid: Option<String>,
-    force_ipv4: bool,
 }
 
 impl SynologyClient {
@@ -197,7 +195,6 @@ impl SynologyClient {
             username: username.to_string(),
             password: password.to_string(),
             sid: None,
-            force_ipv4,
         }
     }
 
@@ -285,26 +282,6 @@ impl SynologyClient {
 
     fn get_url(&mut self, endpoint: &str) -> String {
         format!("{}/webapi{}", self.base_url, endpoint)
-    }
-
-    // Helper method to log requests with optional parameter masking
-    fn log_request(&self, url: &str, params: &[(&str, &str)], mask_params: &[&str]) {
-        // Create a copy of params with masked values for sensitive parameters
-        let masked_params: Vec<(&str, &str)> = params.iter()
-            .map(|(key, value)| {
-                if mask_params.contains(key) {
-                    (*key, "********")
-                } else {
-                    (*key, *value)
-                }
-            })
-            .collect();
-
-        debug!("Sending Synology API request to: {} with params: {:?}", url, masked_params);
-
-        // Log the equivalent curl command
-        let curl_cmd = self.to_curl_command(url, params, mask_params);
-        debug!("Equivalent curl command: {}", curl_cmd);
     }
 
     // Helper method to convert a request to its equivalent curl command
@@ -423,30 +400,6 @@ impl SynologyClient {
             error!("{}", error_msg);
             Err(SynologyClientError::Generic(error_msg.to_string()))
         }
-    }
-
-    pub async fn list_files(&mut self, folder_path: &str) -> Result<Vec<FileInfo>, SynologyClientError> {
-        info!("Listing files in folder: {}", folder_path);
-
-        // Explicitly login before the request
-        self.login().await?;
-
-        // Use a match to ensure logout happens even if there's an error
-        let result = self.api_request::<FileListData, Vec<FileInfo>>(
-            FILESTATION_ENDPOINT,
-            "SYNO.FileStation.List",
-            "2",
-            "list",
-            vec![("folder_path", folder_path)],
-            &format!("list files in {}", folder_path)
-        ).await;
-
-        // Always logout after the request
-        if let Err(e) = self.logout().await {
-            error!("Failed to logout after list_files: {}", e);
-        }
-
-        result
     }
 
     pub async fn get_ssh_status(&mut self) -> Result<bool, SynologyClientError> {

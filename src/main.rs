@@ -19,7 +19,6 @@ struct SynologyConfig {
 }
 
 // Callback data for menu buttons
-const CALLBACK_LIST_FILES: &str = "list_files";
 const CALLBACK_SSH_MENU: &str = "ssh_menu";
 const CALLBACK_SSH_ON: &str = "ssh_on";
 const CALLBACK_SSH_OFF: &str = "ssh_off";
@@ -99,14 +98,10 @@ fn is_authorized_chat(chat_id: i64) -> bool {
 fn create_main_menu() -> InlineKeyboardMarkup {
     let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
 
-    // List Files button
-    let list_files_button = InlineKeyboardButton::callback("📁 List Files", CALLBACK_LIST_FILES);
-
     // SSH Control button
     let ssh_button = InlineKeyboardButton::callback("🖥️ SSH Control", CALLBACK_SSH_MENU);
 
     // Add buttons to keyboard
-    keyboard.push(vec![list_files_button]);
     keyboard.push(vec![ssh_button]);
 
     InlineKeyboardMarkup::new(keyboard)
@@ -172,7 +167,6 @@ async fn answer_command(
             help_text.push_str("\n\nInteractive Menu:\n");
             help_text.push_str("Use /start to display the interactive menu for easier navigation.\n");
             help_text.push_str("\nAdditional commands:\n");
-            help_text.push_str("/ls path - List files in a directory\n");
             help_text.push_str("/ssh [on|off] - Get SSH status or enable/disable SSH\n");
             help_text.push_str("\nConfiguration:\n");
             help_text.push_str("Synology settings must be configured via environment variables:\n");
@@ -273,13 +267,6 @@ async fn callback_handler(
 
             match data.as_str() {
                 // Main menu options
-                CALLBACK_LIST_FILES => {
-                    // Ask for path
-                    bot.send_message(
-                        chat_id,
-                        "Please enter the path to list files using the format:\n/ls path"
-                    ).await?;
-                }
                 CALLBACK_SSH_MENU => {
                     // Get current SSH status before showing the menu
                     let mut config = synology_config.lock().await;
@@ -485,62 +472,6 @@ async fn message_handler(
 
         // Handle custom commands
 
-        if text.starts_with("/ls") {
-            info!("received an `ls` command");
-            let parts: Vec<&str> = text.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let path = parts[1].to_string();
-
-                let mut config = synology_config.lock().await;
-
-                // Ensure logged in
-                match config.ensure_logged_in().await {
-                    Ok(true) => {
-                        // Now we're logged in, proceed with listing files
-                        if let Some(client) = &mut config.client {
-                            match client.list_files(&path).await {
-                                Ok(files) => {
-                                    if files.is_empty() {
-                                        bot.send_message(msg.chat.id, "No files found.").await?;
-                                    } else {
-                                        let mut file_list = String::from("Files:\n");
-                                        for file in files {
-                                            let file_type = if file.isdir { "📁" } else { "📄" };
-                                            file_list.push_str(&format!("{} {}\n", file_type, file.name));
-                                        }
-                                        bot.send_message(msg.chat.id, file_list).await?;
-                                    }
-                                },
-                                Err(e) => {
-                                    bot.send_message(
-                                        msg.chat.id, 
-                                        format!("Failed to list files: {}", e)
-                                    ).await?;
-                                }
-                            }
-                        }
-                    },
-                    Ok(false) => {
-                        bot.send_message(
-                            msg.chat.id, 
-                            "Could not login to Synology NAS. Please check your SYNOLOGY_USERNAME and SYNOLOGY_PASSWORD environment variables."
-                        ).await?;
-                    },
-                    Err(e) => {
-                        bot.send_message(
-                            msg.chat.id, 
-                            format!("Failed to login to Synology NAS: {}", e)
-                        ).await?;
-                    }
-                }
-            } else {
-                bot.send_message(
-                    msg.chat.id, 
-                    "Usage: /ls path"
-                ).await?;
-            }
-            return Ok(());
-        }
 
         if text.starts_with("/setnas") {
             // Inform user that settings can only be configured via environment variables
