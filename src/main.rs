@@ -202,7 +202,7 @@ async fn answer_command(
             // Send welcome message with the keyboard
             bot.send_message(
                 msg.chat.id,
-                format!("Welcome {} to your personal Telegram bot! Please select an option from the menu below:", msg.chat.id),
+                format!("Welcome {} to your personal Telegram bot! Please select an option from the menu below:", msg.from().unwrap().first_name),
             )
             .reply_markup(keyboard)
             .await?;

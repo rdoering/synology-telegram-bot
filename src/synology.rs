@@ -151,6 +151,20 @@ impl From<ServiceStatusData> for bool {
     }
 }
 
+// A struct to handle responses with just {"success":true}
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SuccessResponse {
+    // This struct is intentionally empty as it's used for responses
+    // that only contain {"success":true} without any data
+}
+
+impl From<SuccessResponse> for () {
+    fn from(_: SuccessResponse) -> Self {
+        // Simply return unit type as there's no data to convert
+        ()
+    }
+}
+
 pub struct SynologyClient {
     client: Client,
     base_url: String,
@@ -461,31 +475,76 @@ impl SynologyClient {
     }
 
     pub async fn toggle_ssh(&mut self, enable: bool) -> Result<(), SynologyClientError> {
-        info!("{} SSH service...", if enable { "Enabling" } else { "Disabling" });
+        info!("Toggle SSH service ({}) ...", if enable { "Enabling" } else { "Disabling" });
 
         // Explicitly login before the request
         self.login().await?;
 
         let enable_ssh_new_state = if enable { "true" } else { "false" };
+        let operation_name = format!("{} SSH service", if enable { "enable" } else { "disable" });
 
-        // Use a match to ensure logout happens even if there's an error
-        let api_result = self.api_request::<(), ()>(
-            TERMINAL_ENDPOINT,
-            "SYNO.Core.Terminal",
-            "1",
-            "set",
-            vec![("enable_ssh", enable_ssh_new_state)],
-            &format!("{} SSH service", if enable { "enable" } else { "disable" })
-        ).await;
+        // Build the URL and parameters
+        let url = self.get_url(TERMINAL_ENDPOINT);
+        let params = vec![
+            ("api", "SYNO.Core.Terminal"),
+            ("version", "1"),
+            ("method", "set"),
+            ("enable_ssh", enable_ssh_new_state),
+            ("_sid", self.sid.as_ref().unwrap()),
+        ];
 
+        // Log the request
+        let builder = self.client.get(&url).query(&params);
+        debug!("Synology request {:?}", builder);
+
+        // Log the equivalent curl command
+        let curl_cmd = self.to_curl_command(&url, &params, &[]);
+        debug!("Equivalent curl command: {}", curl_cmd);
+
+        // Send request
+        let response = builder
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let body_text = response.text().await?;
+        debug!("Response body: {}", body_text);
+
+        // Parse response
+        let json_value: serde_json::Value = serde_json::from_str(&body_text)
+            .map_err(|e| SynologyClientError::Generic(format!("JSON parsing error: {}", e)))?;
+
+        // Check if the response has a success field and it's true
+        if let Some(success) = json_value.get("success").and_then(|v| v.as_bool()) {
+            if success {
+                // Always logout after the request
+                if let Err(e) = self.logout().await {
+                    error!("Failed to logout after toggle_ssh: {}", e);
+                }
+
+                info!("Successfully {} SSH service", if enable { "enabled" } else { "disabled" });
+                return Ok(());
+            }
+        }
+
+        // If we get here, the request was not successful
         // Always logout after the request
         if let Err(e) = self.logout().await {
             error!("Failed to logout after toggle_ssh: {}", e);
         }
 
-        // Process the result
-        let result = api_result?;
-        info!("Successfully {} SSH service", if enable { "enabled" } else { "disabled" });
-        Ok(result)
+        // Handle error response
+        if let Some(error) = json_value.get("error").and_then(|v| v.as_object()) {
+            if let Some(code_val) = error.get("code").and_then(|v| v.as_i64()) {
+                let error_msg = format!("{} failed with error code: {}", operation_name, code_val);
+                error!("{}", error_msg);
+                return Err(SynologyClientError::Generic(error_msg));
+            }
+        }
+
+        // Generic error if we can't parse the error
+        let error_msg = format!("{} failed with unknown error", operation_name);
+        error!("{}", error_msg);
+        Err(SynologyClientError::Generic(error_msg))
     }
 }
