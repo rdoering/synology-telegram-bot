@@ -105,6 +105,21 @@ You can also interact with the bot using the following text commands:
 - `SYNOLOGY_USERNAME` - Your Synology NAS username (required)
 - `SYNOLOGY_PASSWORD` - Your Synology NAS password (required)
 - `ALLOWED_CHAT_ID` - Your Telegram chat ID that is allowed to use the bot (required)
+- `FORCE_IPV4` - Set to "true" or "1" to force IPv4 connections to the Synology NAS (optional, default: false)
+
+### Known Issues
+
+#### IPv6 Bug in Synology DSM
+
+There is a known issue with IPv6 connections to Synology DSM:
+
+IPv6 sessions do not have permission to access the SYNO.Core.Terminal API, resulting in error code 105 ("The logged in session does not have permission").
+
+If you experience these issues, set the `FORCE_IPV4` environment variable to force the bot to use IPv4 connections:
+
+```
+export FORCE_IPV4=true
+```
 
 ### Adding New Features
 

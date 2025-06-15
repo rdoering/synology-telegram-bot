@@ -4,6 +4,7 @@ use teloxide::{prelude::*, utils::command::BotCommands};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, InlineQuery, InlineQueryResult, InlineQueryResultArticle, InputMessageContent, InputMessageContentText, MenuButton};
 use tokio::sync::Mutex;
 use log::{error, info, warn};
+use local_ip_address::local_ip;
 
 mod synology;
 use synology::SynologyClient;
@@ -14,6 +15,7 @@ struct SynologyConfig {
     nas_base_url: String,
     username: String,
     password: String,
+    force_ipv4: bool,
 }
 
 // Callback data for menu buttons
@@ -36,6 +38,15 @@ impl SynologyConfig {
             String::new()
         });
 
+        // Check if IPv4 should be forced
+        let force_ipv4 = std::env::var("FORCE_IPV4")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
+        if force_ipv4 {
+            info!("IPv4 will be forced for Synology API requests");
+        }
+
         info!("Initializing Synology configuration with base URL: {}", nas_base_url);
 
         SynologyConfig {
@@ -43,11 +54,17 @@ impl SynologyConfig {
             nas_base_url,
             username,
             password,
+            force_ipv4,
         }
     }
 
     fn create_client(&mut self) {
-        self.client = Some(SynologyClient::new(&self.nas_base_url, &self.username, &self.password));
+        self.client = Some(SynologyClient::new(
+            &self.nas_base_url, 
+            &self.username, 
+            &self.password,
+            self.force_ipv4
+        ));
     }
 
     // Automatically login if needed
@@ -162,6 +179,7 @@ async fn answer_command(
             help_text.push_str("- SYNOLOGY_NAS_BASE_URL: Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)\n");
             help_text.push_str("- SYNOLOGY_USERNAME: Your Synology NAS username (required)\n");
             help_text.push_str("- SYNOLOGY_PASSWORD: Your Synology NAS password (required)\n");
+            help_text.push_str("- FORCE_IPV4: Set to 'true' or '1' to force IPv4 connections (optional, helps with Synology IPv6 bugs)\n");
 
             bot.send_message(msg.chat.id, help_text).await?;
 
@@ -629,6 +647,12 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     info!("Starting Synology Telegram Bot...");
+
+    // Log the current IP address
+    match local_ip() {
+        Ok(ip) => info!("Current IP address: {}", ip),
+        Err(e) => warn!("Could not determine local IP address: {}", e),
+    };
 
     // Get the bot token from environment variable
     let bot_token = std::env::var("TELEGRAM_BOT_TOKEN")

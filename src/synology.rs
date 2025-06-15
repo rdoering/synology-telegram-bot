@@ -1,8 +1,9 @@
-use reqwest::{Client, Error as ReqwestError};
+use reqwest::{Client, ClientBuilder, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
 use log::{info, error, debug};
 use std::fmt;
 use std::error::Error;
+use std::net::{IpAddr, Ipv4Addr};
 
 // Synology API endpoints
 const AUTH_ENDPOINT: &str = "/entry.cgi";
@@ -156,17 +157,73 @@ pub struct SynologyClient {
     username: String,
     password: String,
     sid: Option<String>,
+    force_ipv4: bool,
 }
 
 impl SynologyClient {
-    pub fn new(base_url: &str, username: &str, password: &str) -> Self {
+    pub fn new(base_url: &str, username: &str, password: &str, force_ipv4: bool) -> Self {
+        // Create a client with cookie storage disabled and optionally force IPv4
+        let mut client_builder = ClientBuilder::new()
+            .cookie_store(false);
+
+        // If force_ipv4 is true, configure the client to use IPv4 only
+        if force_ipv4 {
+            let ipv4_addr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)); // 0.0.0.0
+            client_builder = client_builder.local_address(ipv4_addr);
+            debug!("Forcing IPv4 for Synology API requests");
+        }
+
+        let client = client_builder
+            .build()
+            .expect("Failed to build reqwest client");
+
         SynologyClient {
-            client: Client::new(),
+            client,
             base_url: base_url.to_string(),
             username: username.to_string(),
             password: password.to_string(),
             sid: None,
+            force_ipv4,
         }
+    }
+
+    pub(crate) async fn logout(&mut self) -> Result<(), SynologyClientError> {
+        if self.sid.is_none() {
+            debug!("Not logged in, no need to logout");
+            return Ok(());
+        }
+
+        let url = self.get_url(AUTH_ENDPOINT);
+        info!("Logging out from Synology NAS...");
+
+        let params = [
+                ("api", "SYNO.API.Auth"),
+                ("version", "3"),
+                ("method", "logout"),
+                ("_sid", self.sid.as_ref().unwrap()),
+            ];
+
+        let builder = self.client
+            .get(&url)
+            .query(&params);
+        debug!("Synology request {:?}", builder);
+
+        // Log the equivalent curl command
+        let curl_cmd = self.to_curl_command(&url, &params, &[]);
+        debug!("Equivalent curl command: {}", curl_cmd);
+
+        let response = builder
+            .send()
+            .await?
+            .error_for_status()?;
+
+        debug!("Logout response: {:?}", response);
+
+        // Clear the session ID
+        self.sid = None;
+        info!("Successfully logged out from Synology NAS");
+
+        Ok(())
     }
 
     pub(crate) async fn login(&mut self) -> Result<(), SynologyClientError> {
@@ -174,21 +231,25 @@ impl SynologyClient {
 
         info!("Logging in to Synology NAS...");
 
-        // Create login parameters (only define once)
         let params = [
-            ("api", "SYNO.API.Auth"),
-            ("version", "3"),
-            ("method", "login"),
-            ("account", &self.username),
-            ("passwd", &self.password),
-        ];
+                ("api", "SYNO.API.Auth"),
+                ("version", "3"),
+                ("method", "login"),
+                ("account", &self.username),
+                ("passwd", &self.password),
+            ];
 
-        // Log the request using the helper method with password masking
-        self.log_request(&url, &params, &["passwd"]);
-
-        let response = self.client
+        let builder = self.client
             .get(&url)
-            .query(&params)
+            .query(&params);
+
+        debug!("Synology request {:?}", builder);
+
+        // Log the equivalent curl command
+        let curl_cmd = self.to_curl_command(&url, &params, &["passwd"]);
+        debug!("Equivalent curl command: {}", curl_cmd);
+
+        let response = builder
             .send()
             .await?
             .error_for_status()?;
@@ -226,6 +287,40 @@ impl SynologyClient {
             .collect();
 
         debug!("Sending Synology API request to: {} with params: {:?}", url, masked_params);
+
+        // Log the equivalent curl command
+        let curl_cmd = self.to_curl_command(url, params, mask_params);
+        debug!("Equivalent curl command: {}", curl_cmd);
+    }
+
+    // Helper method to convert a request to its equivalent curl command
+    fn to_curl_command(&self, url: &str, params: &[(&str, &str)], mask_params: &[&str]) -> String {
+        // Start with the base curl command
+        let mut curl_cmd = format!("curl -X GET");
+
+        // Add the URL with query parameters
+        let mut first_param = true;
+        let mut full_url = url.to_string();
+
+        for (key, value) in params {
+            let param_value = if mask_params.contains(key) {
+                "********"
+            } else {
+                value
+            };
+
+            if first_param {
+                full_url.push_str(&format!("?{}={}", key, param_value));
+                first_param = false;
+            } else {
+                full_url.push_str(&format!("&{}={}", key, param_value));
+            }
+        }
+
+        // Add the URL to the curl command (with proper escaping)
+        curl_cmd.push_str(&format!(" '{}'", full_url.replace("'", "\\'")));
+
+        curl_cmd
     }
 
     async fn ensure_login(&mut self) -> Result<bool, SynologyClientError> {
@@ -272,6 +367,10 @@ impl SynologyClient {
             .query(&params);
         debug!("Synology request {:?}", builder);
 
+        // Log the equivalent curl command
+        let curl_cmd = self.to_curl_command(&url, &params, &[]);
+        debug!("Equivalent curl command: {}", curl_cmd);
+
         // Send request
         let response = builder
             .send()
@@ -315,26 +414,48 @@ impl SynologyClient {
     pub async fn list_files(&mut self, folder_path: &str) -> Result<Vec<FileInfo>, SynologyClientError> {
         info!("Listing files in folder: {}", folder_path);
 
-        self.api_request::<FileListData, Vec<FileInfo>>(
+        // Explicitly login before the request
+        self.login().await?;
+
+        // Use a match to ensure logout happens even if there's an error
+        let result = self.api_request::<FileListData, Vec<FileInfo>>(
             FILESTATION_ENDPOINT,
             "SYNO.FileStation.List",
             "2",
             "list",
             vec![("folder_path", folder_path)],
             &format!("list files in {}", folder_path)
-        ).await
+        ).await;
+
+        // Always logout after the request
+        if let Err(e) = self.logout().await {
+            error!("Failed to logout after list_files: {}", e);
+        }
+
+        result
     }
 
     pub async fn get_ssh_status(&mut self) -> Result<bool, SynologyClientError> {
-        let result = self.api_request::<ServiceStatusData, bool>(
+        // Explicitly login before the request
+        self.login().await?;
+
+        // Use a match to ensure logout happens even if there's an error
+        let api_result = self.api_request::<ServiceStatusData, bool>(
             TERMINAL_ENDPOINT,
             "SYNO.Core.Terminal",
             "1",
             "get",
             vec![],
             "get SSH service status"
-        ).await?;
+        ).await;
 
+        // Always logout after the request
+        if let Err(e) = self.logout().await {
+            error!("Failed to logout after get_ssh_status: {}", e);
+        }
+
+        // Process the result
+        let result = api_result?;
         info!("SSH service status: {}", if result { "enabled" } else { "disabled" });
         Ok(result)
     }
@@ -342,17 +463,28 @@ impl SynologyClient {
     pub async fn toggle_ssh(&mut self, enable: bool) -> Result<(), SynologyClientError> {
         info!("{} SSH service...", if enable { "Enabling" } else { "Disabling" });
 
+        // Explicitly login before the request
+        self.login().await?;
+
         let enable_ssh_new_state = if enable { "true" } else { "false" };
 
-        let result = self.api_request::<(), ()>(
+        // Use a match to ensure logout happens even if there's an error
+        let api_result = self.api_request::<(), ()>(
             TERMINAL_ENDPOINT,
             "SYNO.Core.Terminal",
             "1",
             "set",
             vec![("enable_ssh", enable_ssh_new_state)],
             &format!("{} SSH service", if enable { "enable" } else { "disable" })
-        ).await?;
+        ).await;
 
+        // Always logout after the request
+        if let Err(e) = self.logout().await {
+            error!("Failed to logout after toggle_ssh: {}", e);
+        }
+
+        // Process the result
+        let result = api_result?;
         info!("Successfully {} SSH service", if enable { "enabled" } else { "disabled" });
         Ok(result)
     }
