@@ -20,6 +20,7 @@ Todo:
 - [ ] Quality assurance with unit tests
 - [ ] A kind of a hello message after the bot starts
 - [ ] Added a description on hub.docker.com
+- [ ] STB_SYNOLOGY_PASSWORD replaced by an secret.]
 
 ## Prerequisites
 
