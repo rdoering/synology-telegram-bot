@@ -14,12 +14,20 @@ A Telegram bot for interacting with your Synology NAS, built with Rust.
   - Logout from your Synology NAS
   - Configure Synology NAS connection via environment variables
 
+Todo:
+- [ ] Docker image for easy deployment
+- [ ] CI integration for automated testing
+- [ ] Quality assurance with unit tests
+- [ ] A kind of a hello message after the bot starts
+
 ## Prerequisites
 
 - Rust and Cargo installed
 - A Telegram bot token (obtained from [@BotFather](https://t.me/BotFather))
 
 ## Setup
+
+### Option 1: Running Locally
 
 1. Clone this repository:
    ```
@@ -29,23 +37,52 @@ A Telegram bot for interacting with your Synology NAS, built with Rust.
 
 2. Set the required environment variables:
    ```
-   export TELEGRAM_BOT_TOKEN=your_bot_token_here
-   export SYNOLOGY_NAS_BASE_URL=http://your_synology_ip:port
-   export SYNOLOGY_USERNAME=your_synology_username
-   export SYNOLOGY_PASSWORD=your_synology_password
-   export ALLOWED_CHAT_ID=your_telegram_chat_id
+   export STB_TELEGRAM_BOT_TOKEN=your_bot_token_here
+   export STB_SYNOLOGY_NAS_BASE_URL=http://your_synology_ip:port
+   export STB_SYNOLOGY_USERNAME=your_synology_username
+   export STB_SYNOLOGY_PASSWORD=your_synology_password
+   export STB_ALLOWED_CHAT_ID=your_telegram_chat_id
    ```
    For example:
    ```
-   export SYNOLOGY_NAS_BASE_URL=http://192.168.1.100:5000
-   export SYNOLOGY_USERNAME=admin
-   export SYNOLOGY_PASSWORD=your_password
-   export ALLOWED_CHAT_ID=123456789
+   export STB_SYNOLOGY_NAS_BASE_URL=http://192.168.1.100:5000
+   export STB_SYNOLOGY_USERNAME=admin
+   export STB_SYNOLOGY_PASSWORD=your_password
+   export STB_ALLOWED_CHAT_ID=123456789
    ```
 
 3. Build and run the bot:
    ```
    cargo run
+   ```
+
+### Option 2: Using Docker Compose
+
+1. Clone this repository:
+   ```
+   git clone https://github.com/yourusername/synology-telegram-bot.git
+   cd synology-telegram-bot
+   ```
+
+2. Copy the example environment file and edit it with your values:
+   ```
+   cp .env.example .env
+   nano .env  # or use your preferred text editor
+   ```
+
+3. Build and start the container:
+   ```
+   docker-compose up -d
+   ```
+
+4. Check the logs:
+   ```
+   docker-compose logs -f
+   ```
+
+5. To stop the container:
+   ```
+   docker-compose down
    ```
 
 ## Usage
@@ -97,12 +134,76 @@ You can also interact with the bot using the following text commands:
 
 ### Environment Variables
 
-- `TELEGRAM_BOT_TOKEN` - Your Telegram bot token (required)
-- `SYNOLOGY_NAS_BASE_URL` - Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)
-- `SYNOLOGY_USERNAME` - Your Synology NAS username (required)
-- `SYNOLOGY_PASSWORD` - Your Synology NAS password (required)
-- `ALLOWED_CHAT_ID` - Your Telegram chat ID that is allowed to use the bot (required)
-- `FORCE_IPV4` - Set to "true" or "1" to force IPv4 connections to the Synology NAS (optional, default: false)
+- `STB_TELEGRAM_BOT_TOKEN` - Your Telegram bot token (required)
+- `STB_SYNOLOGY_NAS_BASE_URL` - Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)
+- `STB_SYNOLOGY_USERNAME` - Your Synology NAS username (required)
+- `STB_SYNOLOGY_PASSWORD` - Your Synology NAS password (required)
+- `STB_ALLOWED_CHAT_ID` - Your Telegram chat ID that is allowed to use the bot (required)
+- `STB_FORCE_IPV4` - Set to "true" or "1" to force IPv4 connections to the Synology NAS (optional, default: false)
+- `STB_RUST_LOG` - Set the log level (optional, default: info)
+
+### Docker Development
+
+#### Building Custom Images
+
+You can build a custom Docker image with a specific version tag:
+
+```bash
+docker build -t synology-telegram-bot:custom-tag --build-arg VERSION=1.0.0 .
+```
+
+#### Running with Docker
+
+To run the container directly with Docker:
+
+```bash
+docker run -d --name synology-telegram-bot \
+  --env-file .env \
+  synology-telegram-bot:latest
+```
+
+#### Docker Compose for Development
+
+The included docker-compose.yml file is configured for local development:
+
+- It mounts a local .env file into the container
+- It sets default values for optional environment variables
+- It configures the container to restart automatically unless stopped manually
+
+To rebuild the container after code changes:
+
+```bash
+docker-compose up -d --build
+```
+
+#### Building on ARM macOS (M1/M2 Macs)
+
+The Dockerfile and docker-compose.yml are configured to support building from ARM macOS (M1/M2 Macs) to both ARM64 and AMD64 Linux containers. By default, when building on ARM macOS, the build will:
+
+1. Use your native ARM64 architecture for the build process (faster compilation)
+2. Target AMD64 architecture for the final container (better compatibility)
+
+To build and run on ARM macOS:
+
+```bash
+# Enable Docker BuildKit for better cross-platform support
+export DOCKER_BUILDKIT=1
+
+# Build and start the container
+docker-compose up -d --build
+```
+
+If you want to explicitly target ARM64 for the final container:
+
+```bash
+# Set the target platform to ARM64
+export TARGETPLATFORM=linux/arm64
+
+# Build and start the container
+docker-compose up -d --build
+```
+
+Note: The first build might take longer due to cross-compilation setup.
 
 ### Known Issues
 
@@ -112,10 +213,10 @@ There is a known issue with IPv6 connections to Synology DSM:
 
 IPv6 sessions do not have permission to access the SYNO.Core.Terminal API, resulting in error code 105 ("The logged in session does not have permission").
 
-If you experience these issues, set the `FORCE_IPV4` environment variable to force the bot to use IPv4 connections:
+If you experience these issues, set the `STB_FORCE_IPV4` environment variable to force the bot to use IPv4 connections:
 
 ```
-export FORCE_IPV4=true
+export STB_FORCE_IPV4=true
 ```
 
 ### Adding New Features

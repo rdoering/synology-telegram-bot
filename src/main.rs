@@ -27,18 +27,18 @@ const CALLBACK_BACK: &str = "back";
 
 impl SynologyConfig {
     fn new() -> Self {
-        let nas_base_url = std::env::var("SYNOLOGY_NAS_BASE_URL").unwrap();
-        let username = std::env::var("SYNOLOGY_USERNAME").unwrap_or_else(|_| {
-            warn!("SYNOLOGY_USERNAME environment variable not set");
+        let nas_base_url = std::env::var("STB_SYNOLOGY_NAS_BASE_URL").unwrap();
+        let username = std::env::var("STB_SYNOLOGY_USERNAME").unwrap_or_else(|_| {
+            warn!("STB_SYNOLOGY_USERNAME environment variable not set");
             String::new()
         });
-        let password = std::env::var("SYNOLOGY_PASSWORD").unwrap_or_else(|_| {
-            warn!("SYNOLOGY_PASSWORD environment variable not set");
+        let password = std::env::var("STB_SYNOLOGY_PASSWORD").unwrap_or_else(|_| {
+            warn!("STB_SYNOLOGY_PASSWORD environment variable not set");
             String::new()
         });
 
         // Check if IPv4 should be forced
-        let force_ipv4 = std::env::var("FORCE_IPV4")
+        let force_ipv4 = std::env::var("STB_FORCE_IPV4")
             .map(|v| v.to_lowercase() == "true" || v == "1")
             .unwrap_or(false);
 
@@ -86,7 +86,7 @@ impl SynologyConfig {
 
 // Function to check if a chat ID is authorized
 fn is_authorized_chat(chat_id: i64) -> bool {
-    if let Ok(allowed_chat_id_str) = std::env::var("ALLOWED_CHAT_ID") {
+    if let Ok(allowed_chat_id_str) = std::env::var("STB_ALLOWED_CHAT_ID") {
         if let Ok(allowed_chat_id) = allowed_chat_id_str.parse::<i64>() {
             return chat_id == allowed_chat_id;
         }
@@ -659,7 +659,7 @@ async fn message_handler(
 #[tokio::main]
 async fn main() {
     // Initialize the logger
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(env_logger::Env::new().filter_or("STB_RUST_LOG", "debug")).init();
 
     info!("Starting Synology Telegram Bot...");
 
@@ -670,8 +670,8 @@ async fn main() {
     };
 
     // Get the bot token from environment variable
-    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
-        .expect("TELEGRAM_BOT_TOKEN environment variable is not set");
+    let bot_token = std::env::var("STB_TELEGRAM_BOT_TOKEN")
+        .expect("STB_TELEGRAM_BOT_TOKEN environment variable is not set");
 
     // Initialize Synology configuration
     let synology_config = Arc::new(Mutex::new(SynologyConfig::new()));
