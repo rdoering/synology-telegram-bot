@@ -1,34 +1,31 @@
-FROM --platform=linux/amd64 rust:1.89-alpine3.22 AS chef
-# Install build dependencies including static OpenSSL libraries
+FROM --platform=linux/amd64 rust:1.89-alpine3.22 AS builder
+# Install build dependencies inklusive statischer OpenSSL-Bibliotheken
 RUN apk update && apk add --no-cache \
     musl-dev gcc g++ make perl pkgconfig \
     openssl-dev openssl-libs-static
 WORKDIR /app
-# Set environment variables for vendored OpenSSL (native compilation only)
+# Setze Umgebungsvariablen für statisches OpenSSL
 ENV OPENSSL_STATIC=yes
 ENV OPENSSL_VENDORED=yes
-
-# Set environment variables for vendored OpenSSL (native x86_64 compilation)
+# Kopiere Cargo.toml und src für einen effizienten Build-Cache
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+# Baue das Release-Binary für linux/amd64
 RUN cargo build --release
 
-FROM alpine:3.22.1
-# Build natively for x86_64 (no cross-compilation needed)
-RUN cargo build --release
-
-# Install runtime dependencies
 FROM --platform=linux/amd64 alpine:3.22.1
+# Installiere minimale Laufzeitabhängigkeiten (z.B. OpenSSL, falls dynamisch gelinkt)
+RUN apk add --no-cache libgcc libssl3
+WORKDIR /app
+# Kopiere das gebaute Binary aus dem Builder-Image
+COPY --from=builder /app/target/release/synology-telegram-bot /app/synology-telegram-bot
 
-# Copy the binary from the builder stage (native architecture)
-COPY --from=chef /app/target/release/synology-telegram-bot /app/synology-telegram-bot
+# Dokumentation der Umgebungsvariablen
+# STB_TELEGRAM_BOT_TOKEN - Erforderlich: Dein Telegram-Bot-Token
+# STB_SYNOLOGY_NAS_BASE_URL - Erforderlich: Basis-URL deines Synology NAS
+# STB_SYNOLOGY_PASSWORD - Erforderlich: NAS-Passwort
+# STB_ALLOWED_CHAT_ID - Erforderlich: Erlaubte Telegram Chat-ID
+# STB_FORCE_IPV4 - Optional: "true" oder "1" für IPv4 (Standard: false)
+# STB_RUST_LOG - Optional: Log-Level (Standard: info)
 
-# Document required environment variables
-# STB_TELEGRAM_BOT_TOKEN - Required: Your Telegram bot token
-# STB_SYNOLOGY_NAS_BASE_URL - Required: Base URL of your Synology NAS (e.g., http://your-nas-ip:port)
-COPY --from=chef /app/target/release/synology-telegram-bot /app/synology-telegram-bot
-# STB_SYNOLOGY_PASSWORD - Required: Your Synology NAS password
-# STB_ALLOWED_CHAT_ID - Required: Your Telegram chat ID that is allowed to use the bot
-# STB_FORCE_IPV4 - Optional: Set to "true" or "1" to force IPv4 connections (default: false)
-# STB_RUST_LOG - Optional: Set the log level (default: info)
-
-# Set the entrypoint
 ENTRYPOINT ["/app/synology-telegram-bot"]
