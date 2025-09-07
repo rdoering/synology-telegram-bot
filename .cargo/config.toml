@@ -1,0 +1,8 @@
+[target.aarch64-apple-darwin]
+# Configuration for M1 Apple chip (Apple Silicon)
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-unknown-linux-gnu]
+# Configuration for Linux 64bit
+linker = "x86_64-unknown-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]

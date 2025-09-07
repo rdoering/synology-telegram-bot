@@ -1,0 +1,28 @@
+services:
+  synology-telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - ${STB_VERSION:-0.0.0-dev}
+      # Enable BuildKit and set platform for cross-compilation
+      no_cache: true
+      args:
+        BUILDPLATFORM: ${BUILDPLATFORM:-linux/arm64}  # Default to ARM64 for M1/M2 Macs
+        TARGETPLATFORM: ${TARGETPLATFORM:-linux/amd64}  # Default target is amd64
+    container_name: synology-telegram-bot
+    restart: unless-stopped
+    environment:
+      # Required environment variables
+      - STB_TELEGRAM_BOT_TOKEN=${STB_TELEGRAM_BOT_TOKEN}
+      - STB_SYNOLOGY_NAS_BASE_URL=${STB_SYNOLOGY_NAS_BASE_URL}
+      - STB_SYNOLOGY_USERNAME=${STB_SYNOLOGY_USERNAME}
+      - STB_SYNOLOGY_PASSWORD=${STB_SYNOLOGY_PASSWORD}
+      - STB_ALLOWED_CHAT_ID=${STB_ALLOWED_CHAT_ID}
+      # Optional environment variables
+      - STB_FORCE_IPV4=${STB_FORCE_IPV4:-false}
+      # Set log level (optional)
+      - STB_RUST_LOG=${STB_RUST_LOG:-info}
+    volumes:
+      # Optional: Mount a local .env file for development
+      - ./.env:/app/.env:ro
