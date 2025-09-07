@@ -19,6 +19,7 @@ Todo:
 - [ ] CI integration for automated testing
 - [ ] Quality assurance with unit tests
 - [ ] A kind of a hello message after the bot starts
+- [ ] Added a description on hub.docker.com
 
 ## Prerequisites
 
