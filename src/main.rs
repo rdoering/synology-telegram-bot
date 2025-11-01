@@ -132,12 +132,8 @@ fn create_ssh_menu(ssh_enabled: bool) -> InlineKeyboardMarkup {
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "snake_case", description = "Available commands:")]
 enum Command {
-    #[command(description = "Display this help message.")]
-    Help,
     #[command(description = "Start the bot.")]
     Start,
-    #[command(description = "Check if the bot is running.")]
-    Ping,
     #[command(description = "Get SSH status or enable/disable SSH. Usage: /ssh [on|off]")]
     Ssh(String),
     #[command(description = "Enable SSH service (same as /ssh on)")]
@@ -169,28 +165,6 @@ async fn answer_command(
         return Ok(());
     }
     match cmd {
-        Command::Help => {
-            let mut help_text = Command::descriptions().to_string();
-            help_text.push_str("\n\nInteractive Menu:\n");
-            help_text.push_str("Use /start to display the interactive menu for easier navigation.\n");
-            help_text.push_str("\nConfiguration:\n");
-            help_text.push_str("Synology settings must be configured via environment variables:\n");
-            help_text.push_str("- SYNOLOGY_NAS_BASE_URL: Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)\n");
-            help_text.push_str("- SYNOLOGY_USERNAME: Your Synology NAS username (required)\n");
-            help_text.push_str("- SYNOLOGY_PASSWORD: Your Synology NAS password (required)\n");
-            help_text.push_str("- FORCE_IPV4: Set to 'true' or '1' to force IPv4 connections (optional, helps with Synology IPv6 bugs)\n");
-
-            bot.send_message(msg.chat.id, help_text).await?;
-
-            // Also show the main menu
-            let keyboard = create_main_menu();
-            bot.send_message(
-                msg.chat.id,
-                "You can also use the menu below:"
-            )
-            .reply_markup(keyboard)
-            .await?;
-        }
         Command::Start => {
             // Create the main menu keyboard
             let keyboard = create_main_menu();
@@ -205,9 +179,6 @@ async fn answer_command(
             )
             .reply_markup(keyboard)
             .await?;
-        }
-        Command::Ping => {
-            bot.send_message(msg.chat.id, "Pong! Bot is running.".to_string()).await?;
         }
         Command::Ssh(arg) => {
             // Get the synology config
@@ -247,7 +218,7 @@ async fn answer_command(
                                             "SSH service has been enabled"
                                         ).await?;
                                     },
-                                    Err(e) => {
+                                    Err(e
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to enable SSH service: {}", e)
@@ -353,7 +324,7 @@ async fn inline_query_handler(
         "1",
         "Command Menu",
         InputMessageContent::Text(
-            InputMessageContentText::new("Use /help to see available commands")
+            InputMessageContentText::new("Use /start to see the menu")
                 .entities(vec![])
         )
     )

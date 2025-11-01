@@ -7,7 +7,7 @@ A Telegram bot for interacting with your Synology NAS, built with Rust.
 - Interactive menu interface for easy navigation
 - Inline query menu in the Telegram input line
 - Command menu button in the chat interface
-- Basic bot commands: /start, /help, /ping
+- Basic bot commands: /start
 - Synology NAS integration:
   - Automatic login to your Synology NAS
   - SSH service control (enable/disable)
@@ -125,8 +125,6 @@ You can also interact with the bot using the following text commands:
 
 #### Basic Commands
 - `/start` - Start the bot and display the interactive menu
-- `/help` - Display available commands
-- `/ping` - Check if the bot is running
 
 #### Synology Commands
 - `/ssh [on|off]` - Get SSH status or enable/disable SSH service
