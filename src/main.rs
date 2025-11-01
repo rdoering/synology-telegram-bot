@@ -218,7 +218,7 @@ async fn answer_command(
                                             "SSH service has been enabled"
                                         ).await?;
                                     },
-                                    Err(e
+                                    Err(e) => {
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to enable SSH service: {}", e)
