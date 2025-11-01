@@ -37,7 +37,7 @@ Todo:
    cd synology-telegram-bot
    ```
 
-2. Set the required environment variables:
+2. Set the required environment variables (or place them in a .env file; values from the real environment take precedence over .env):
    ```
    export STB_TELEGRAM_BOT_TOKEN=your_bot_token_here
    export STB_SYNOLOGY_NAS_BASE_URL=http://your_synology_ip:port
@@ -143,6 +143,13 @@ You can also interact with the bot using the following text commands:
 - `STB_ALLOWED_CHAT_ID` - Your Telegram chat ID that is allowed to use the bot (required)
 - `STB_FORCE_IPV4` - Set to "true" or "1" to force IPv4 connections to the Synology NAS (optional, default: false)
 - `STB_RUST_LOG` - Set the log level (optional, default: info)
+
+#### .env notes (backslashes and special characters)
+
+- The app first tries to load your .env with a strict parser (dotenvy). If that fails due to escaping rules (e.g., values with backslashes like `\\` or sequences like `\w`), it will automatically retry with a lenient loader that treats backslashes literally and does not override existing environment variables.
+- Best practice: if your password contains special characters, wrap it in single quotes in `.env`:
+  - Example: `STB_SYNOLOGY_PASSWORD='Pass\word\With\Special\Chars'`
+- Environment variables from your actual environment always take precedence over values from `.env`.
 
 ### Docker Development
 

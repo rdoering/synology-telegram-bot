@@ -658,8 +658,25 @@ async fn message_handler(
 
 #[tokio::main]
 async fn main() {
+    // Load .env file if present (optional) without overriding existing environment variables
+    // This must happen before logger initialization so that STB_RUST_LOG from .env is respected.
+    let dotenv_result = dotenvy::dotenv();
+
     // Initialize the logger
     env_logger::Builder::from_env(env_logger::Env::new().filter_or("STB_RUST_LOG", "debug")).init();
+
+    // Log whether .env was found and from which path, or that it was not found
+    match &dotenv_result {
+        Ok(path) => info!("Loaded .env from: {}", path.display()),
+        Err(err) => {
+            // Not found is expected/okay; any other error should be reported
+            if matches!(err, dotenvy::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                info!(".env file not found; continuing without it");
+            } else {
+                warn!("Failed to load .env: {}", err);
+            }
+        }
+    }
 
     info!("Starting Synology Telegram Bot...");
 
