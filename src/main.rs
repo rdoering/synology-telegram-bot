@@ -130,7 +130,7 @@ fn create_ssh_menu(ssh_enabled: bool) -> InlineKeyboardMarkup {
 }
 
 #[derive(BotCommands, Clone)]
-#[command(rename_rule = "lowercase", description = "Available commands:")]
+#[command(rename_rule = "snake_case", description = "Available commands:")]
 enum Command {
     #[command(description = "Display this help message.")]
     Help,
@@ -140,6 +140,10 @@ enum Command {
     Ping,
     #[command(description = "Get SSH status or enable/disable SSH. Usage: /ssh [on|off]")]
     Ssh(String),
+    #[command(description = "Enable SSH service (same as /ssh on)")]
+    SshOn,
+    #[command(description = "Disable SSH service (same as /ssh off)")]
+    SshOff,
 }
 
 // Handle commands from BotCommands enum
@@ -285,6 +289,52 @@ async fn answer_command(
                         msg.chat.id, 
                         format!("Failed to login to Synology NAS: {}", e)
                     ).await?;
+                }
+            }
+        }
+        Command::SshOn => {
+            let mut config = synology_config.lock().await;
+            match config.ensure_logged_in().await {
+                Ok(true) => {
+                    if let Some(client) = &mut config.client {
+                        match client.toggle_ssh(true).await {
+                            Ok(_) => {
+                                bot.send_message(msg.chat.id, "SSH service has been enabled").await?;
+                            },
+                            Err(e) => {
+                                bot.send_message(msg.chat.id, format!("Failed to enable SSH service: {}", e)).await?;
+                            }
+                        }
+                    }
+                },
+                Ok(false) => {
+                    bot.send_message(msg.chat.id, "Could not login to Synology NAS. Please check your SYNOLOGY_USERNAME and SYNOLOGY_PASSWORD environment variables.").await?;
+                },
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("Failed to login to Synology NAS: {}", e)).await?;
+                }
+            }
+        }
+        Command::SshOff => {
+            let mut config = synology_config.lock().await;
+            match config.ensure_logged_in().await {
+                Ok(true) => {
+                    if let Some(client) = &mut config.client {
+                        match client.toggle_ssh(false).await {
+                            Ok(_) => {
+                                bot.send_message(msg.chat.id, "SSH service has been disabled").await?;
+                            },
+                            Err(e) => {
+                                bot.send_message(msg.chat.id, format!("Failed to disable SSH service: {}", e)).await?;
+                            }
+                        }
+                    }
+                },
+                Ok(false) => {
+                    bot.send_message(msg.chat.id, "Could not login to Synology NAS. Please check your SYNOLOGY_USERNAME and SYNOLOGY_PASSWORD environment variables.").await?;
+                },
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("Failed to login to Synology NAS: {}", e)).await?;
                 }
             }
         }
