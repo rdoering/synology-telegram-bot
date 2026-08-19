@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use teloxide::{prelude::*, utils::command::BotCommands};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, InlineQuery, InlineQueryResult, InlineQueryResultArticle, InputMessageContent, InputMessageContentText, MenuButton};
 use tokio::sync::Mutex;
@@ -8,6 +9,39 @@ use local_ip_address::local_ip;
 
 mod synology;
 use synology::SynologyClient;
+
+mod bao;
+use bao::{verify_totp, BaoClient};
+
+// OpenBao unseal configuration (optional feature; enabled when all three env vars are set)
+struct BaoConfig {
+    client: BaoClient,
+    unseal_key: String,
+    totp_secret: String,
+}
+
+impl BaoConfig {
+    fn from_env() -> Option<Self> {
+        let addr = std::env::var("STB_BAO_ADDR").ok()?;
+        let unseal_key = std::env::var("STB_BAO_UNSEAL_KEY").ok()?;
+        let totp_secret = std::env::var("STB_UNSEAL_TOTP_SECRET").ok()?;
+        info!("OpenBao unseal support enabled (addr: {})", addr);
+        Some(BaoConfig {
+            client: BaoClient::new(&addr),
+            unseal_key,
+            totp_secret,
+        })
+    }
+}
+
+// Pending TOTP challenge for /unseal (per chat, time-limited)
+#[derive(Clone, Copy)]
+struct PendingUnseal {
+    chat_id: ChatId,
+    since: Instant,
+}
+
+const TOTP_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(90);
 
 // Structure to hold the Synology client configuration
 struct SynologyConfig {
@@ -140,6 +174,10 @@ enum Command {
     SshOn,
     #[command(description = "Disable SSH service (same as /ssh off)")]
     SshOff,
+    #[command(description = "Show OpenBao seal status")]
+    SealStatus,
+    #[command(description = "Unseal OpenBao (asks for TOTP code)")]
+    Unseal,
 }
 
 // Handle commands from BotCommands enum
@@ -147,7 +185,9 @@ async fn answer_command(
     bot: Bot,
     msg: Message,
     cmd: Command,
-    synology_config: Arc<Mutex<SynologyConfig>>
+    synology_config: Arc<Mutex<SynologyConfig>>,
+    bao_config: Arc<Option<BaoConfig>>,
+    pending_unseal: Arc<Mutex<Option<PendingUnseal>>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Check if the chat is authorized
     if !is_authorized_chat(msg.chat.id.0) {
@@ -306,6 +346,60 @@ async fn answer_command(
                 },
                 Err(e) => {
                     bot.send_message(msg.chat.id, format!("Failed to login to Synology NAS: {}", e)).await?;
+                }
+            }
+        }
+        Command::SealStatus => {
+            match bao_config.as_ref() {
+                None => {
+                    bot.send_message(msg.chat.id, "OpenBao support is not configured (STB_BAO_* env vars missing).").await?;
+                },
+                Some(bao) => {
+                    match bao.client.seal_status().await {
+                        Ok(status) => {
+                            let text = if !status.initialized {
+                                "OpenBao is NOT INITIALIZED.".to_string()
+                            } else if status.sealed {
+                                format!("🔒 OpenBao is SEALED (progress {}/{})", status.progress, status.t)
+                            } else {
+                                "🔓 OpenBao is unsealed.".to_string()
+                            };
+                            bot.send_message(msg.chat.id, text).await?;
+                        },
+                        Err(e) => {
+                            bot.send_message(msg.chat.id, format!("Failed to get seal status: {}", e)).await?;
+                        }
+                    }
+                }
+            }
+        }
+        Command::Unseal => {
+            match bao_config.as_ref() {
+                None => {
+                    bot.send_message(msg.chat.id, "OpenBao support is not configured (STB_BAO_* env vars missing).").await?;
+                },
+                Some(bao) => {
+                    match bao.client.seal_status().await {
+                        Ok(status) => {
+                            if !status.initialized {
+                                bot.send_message(msg.chat.id, "OpenBao is not initialized yet — unseal not possible.").await?;
+                            } else if !status.sealed {
+                                bot.send_message(msg.chat.id, "OpenBao is already unsealed.").await?;
+                            } else {
+                                *pending_unseal.lock().await = Some(PendingUnseal {
+                                    chat_id: msg.chat.id,
+                                    since: Instant::now(),
+                                });
+                                bot.send_message(
+                                    msg.chat.id,
+                                    format!("🔑 Please send your TOTP code within {} seconds. The message will be deleted after processing.", TOTP_CHALLENGE_TIMEOUT.as_secs())
+                                ).await?;
+                            }
+                        },
+                        Err(e) => {
+                            bot.send_message(msg.chat.id, format!("Cannot reach OpenBao: {}", e)).await?;
+                        }
+                    }
                 }
             }
         }
@@ -550,9 +644,11 @@ async fn callback_handler(
 
 // Handle all messages
 async fn message_handler(
-    bot: Bot, 
-    msg: Message, 
-    synology_config: Arc<Mutex<SynologyConfig>>
+    bot: Bot,
+    msg: Message,
+    synology_config: Arc<Mutex<SynologyConfig>>,
+    bao_config: Arc<Option<BaoConfig>>,
+    pending_unseal: Arc<Mutex<Option<PendingUnseal>>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Check if the chat is authorized
     if !is_authorized_chat(msg.chat.id.0) {
@@ -569,10 +665,58 @@ async fn message_handler(
 
         return Ok(());
     }
+
+    // Pending TOTP challenge for /unseal: the next text message in this chat is the code
+    {
+        let mut pending = pending_unseal.lock().await;
+        if let Some(p) = *pending {
+            if p.chat_id == msg.chat.id {
+                if p.since.elapsed() > TOTP_CHALLENGE_TIMEOUT {
+                    *pending = None;
+                    bot.send_message(msg.chat.id, "TOTP challenge expired. Call /unseal again.").await?;
+                    return Ok(());
+                }
+                if let Some(text) = msg.text() {
+                    *pending = None; // single attempt; /unseal restarts the challenge
+                    let code = text.trim().to_string();
+                    // Delete the message carrying the code (hygiene)
+                    if let Err(e) = bot.delete_message(msg.chat.id, msg.id).await {
+                        warn!("Could not delete TOTP message: {}", e);
+                    }
+                    match bao_config.as_ref() {
+                        None => {
+                            bot.send_message(msg.chat.id, "OpenBao support is not configured.").await?;
+                        },
+                        Some(bao) => {
+                            if verify_totp(&bao.totp_secret, &code) {
+                                match bao.client.unseal(&bao.unseal_key).await {
+                                    Ok(status) => {
+                                        if status.sealed {
+                                            bot.send_message(msg.chat.id, format!("⚠️ Key accepted, still sealed (progress {}/{})", status.progress, status.t)).await?;
+                                        } else {
+                                            bot.send_message(msg.chat.id, "🔓 OpenBao is now unsealed.").await?;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        bot.send_message(msg.chat.id, format!("Unseal failed: {}", e)).await?;
+                                    }
+                                }
+                            } else {
+                                warn!("Invalid TOTP code for /unseal from chat {}", msg.chat.id.0);
+                                bot.send_message(msg.chat.id, "❌ Invalid TOTP code. Call /unseal again.").await?;
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     if let Some(text) = msg.text() {
         // Try to parse as a command
         if let Ok(command) = Command::parse(text, "synology_bot") {
-            return answer_command(bot.clone(), msg.clone(), command, synology_config.clone()).await;
+            return answer_command(bot.clone(), msg.clone(), command, synology_config.clone(), bao_config.clone(), pending_unseal.clone()).await;
         }
 
         // Handle custom commands
@@ -714,6 +858,13 @@ async fn main() {
     // Initialize Synology configuration
     let synology_config = Arc::new(Mutex::new(SynologyConfig::new()));
 
+    // OpenBao unseal support (optional)
+    let bao_config: Arc<Option<BaoConfig>> = Arc::new(BaoConfig::from_env());
+    if bao_config.is_none() {
+        info!("OpenBao unseal support disabled (STB_BAO_ADDR / STB_BAO_UNSEAL_KEY / STB_UNSEAL_TOTP_SECRET not fully set)");
+    }
+    let pending_unseal: Arc<Mutex<Option<PendingUnseal>>> = Arc::new(Mutex::new(None));
+
     info!("Initializing bot ()...");
     let bot = Bot::new(bot_token);
 
@@ -760,7 +911,7 @@ async fn main() {
     info!("Bot username: @{}", me.username());
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![synology_config])
+        .dependencies(dptree::deps![synology_config, bao_config, pending_unseal])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
