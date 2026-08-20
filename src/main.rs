@@ -11,38 +11,36 @@ mod synology;
 use synology::SynologyClient;
 
 mod bao;
-use bao::{verify_totp, BaoClient};
+use bao::{decrypt_ciphertext, generate_ephemeral_key, random_session_id, BaoClient};
 
-// OpenBao unseal configuration (optional feature; enabled when all three env vars are set)
+// OpenBao unseal configuration (optional feature; enabled when both env vars are set)
 struct BaoConfig {
     client: BaoClient,
-    unseal_key: String,
-    totp_secret: String,
+    web_url: String,
 }
 
 impl BaoConfig {
     fn from_env() -> Option<Self> {
         // Note: compose always defines these vars (possibly empty) — treat empty as unset.
         let addr = std::env::var("STB_BAO_ADDR").ok().filter(|v| !v.is_empty())?;
-        let unseal_key = std::env::var("STB_BAO_UNSEAL_KEY").ok().filter(|v| !v.is_empty())?;
-        let totp_secret = std::env::var("STB_UNSEAL_TOTP_SECRET").ok().filter(|v| !v.is_empty())?;
-        info!("OpenBao unseal support enabled (addr: {})", addr);
+        let web_url = std::env::var("STB_UNSEAL_WEB_URL").ok().filter(|v| !v.is_empty())?;
+        info!("OpenBao unseal support enabled (addr: {}, web: {})", addr, web_url);
         Some(BaoConfig {
             client: BaoClient::new(&addr),
-            unseal_key,
-            totp_secret,
+            web_url: web_url.trim_end_matches('/').to_string(),
         })
     }
 }
 
-// Pending TOTP challenge for /unseal (per chat, time-limited)
-#[derive(Clone, Copy)]
-struct PendingUnseal {
+// Pending unseal challenge: ephemeral keypair + session reference (lives only in RAM)
+struct UnsealSession {
     chat_id: ChatId,
+    session_id: String,
+    identity: age::x25519::Identity,
     since: Instant,
 }
 
-const TOTP_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(90);
+const UNSEAL_SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Structure to hold the Synology client configuration
 struct SynologyConfig {
@@ -188,7 +186,7 @@ async fn answer_command(
     cmd: Command,
     synology_config: Arc<Mutex<SynologyConfig>>,
     bao_config: Arc<Option<BaoConfig>>,
-    pending_unseal: Arc<Mutex<Option<PendingUnseal>>>
+    pending_unseal: Arc<Mutex<Option<UnsealSession>>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Check if the chat is authorized
     if !is_authorized_chat(msg.chat.id.0) {
@@ -396,14 +394,19 @@ async fn answer_command(
                             } else if !status.sealed {
                                 bot.send_message(msg.chat.id, "OpenBao is already unsealed.").await?;
                             } else {
-                                info!("TOTP challenge for /unseal started (chat {})", msg.chat.id.0);
-                                *pending_unseal.lock().await = Some(PendingUnseal {
+                                let key = generate_ephemeral_key();
+                                let session_id = random_session_id();
+                                let link = format!("{}/#s={}&k={}", bao.web_url, session_id, key.recipient);
+                                info!("Unseal session {} created (chat {})", session_id, msg.chat.id.0);
+                                *pending_unseal.lock().await = Some(UnsealSession {
                                     chat_id: msg.chat.id,
+                                    session_id: session_id.clone(),
+                                    identity: key.identity,
                                     since: Instant::now(),
                                 });
                                 bot.send_message(
                                     msg.chat.id,
-                                    format!("🔑 Please send your TOTP code within {} seconds. The message will be deleted after processing.", TOTP_CHALLENGE_TIMEOUT.as_secs())
+                                    format!("🔑 Open this link (valid for {} minutes), paste your unseal token from Bitwarden, encrypt it, and send the ciphertext back here:\n\n{}", UNSEAL_SESSION_TIMEOUT.as_secs() / 60, link)
                                 ).await?;
                             }
                         },
@@ -660,7 +663,7 @@ async fn message_handler(
     msg: Message,
     synology_config: Arc<Mutex<SynologyConfig>>,
     bao_config: Arc<Option<BaoConfig>>,
-    pending_unseal: Arc<Mutex<Option<PendingUnseal>>>
+    pending_unseal: Arc<Mutex<Option<UnsealSession>>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Check if the chat is authorized
     if !is_authorized_chat(msg.chat.id.0) {
@@ -678,48 +681,59 @@ async fn message_handler(
         return Ok(());
     }
 
-    // Pending TOTP challenge for /unseal: the next text message in this chat is the code
+    // Pending unseal session: the next text message in this chat is the age ciphertext
     {
         let mut pending = pending_unseal.lock().await;
-        if let Some(p) = *pending {
+        if let Some(p) = pending.as_ref() {
             if p.chat_id == msg.chat.id {
-                if p.since.elapsed() > TOTP_CHALLENGE_TIMEOUT {
+                if p.since.elapsed() > UNSEAL_SESSION_TIMEOUT {
+                    let sid = p.session_id.clone();
                     *pending = None;
-                    bot.send_message(msg.chat.id, "TOTP challenge expired. Call /unseal again.").await?;
+                    info!("Unseal session {} expired (chat {})", sid, msg.chat.id.0);
+                    bot.send_message(msg.chat.id, "Unseal session expired. Call /unseal again for a new link.").await?;
                     return Ok(());
                 }
                 if let Some(text) = msg.text() {
-                    *pending = None; // single attempt; /unseal restarts the challenge
-                    let code = text.trim().to_string();
-                    // Delete the message carrying the code (hygiene)
+                    // Take the session out (single attempt; /unseal restarts with a fresh link)
+                    let session = pending.take().expect("session checked above");
+                    let ciphertext = text.trim().to_string();
+                    // Delete the message carrying the ciphertext (hygiene)
                     if let Err(e) = bot.delete_message(msg.chat.id, msg.id).await {
-                        warn!("Could not delete TOTP message: {}", e);
+                        warn!("Could not delete ciphertext message: {}", e);
+                    }
+                    if !ciphertext.starts_with("-----BEGIN AGE ENCRYPTED FILE-----") {
+                        warn!("Unseal session {}: message is not an age ciphertext (chat {})", session.session_id, msg.chat.id.0);
+                        bot.send_message(msg.chat.id, "That was not an age ciphertext. Please encrypt the token in the web app and send the encrypted text. Call /unseal for a new link.").await?;
+                        return Ok(());
                     }
                     match bao_config.as_ref() {
                         None => {
                             bot.send_message(msg.chat.id, "OpenBao support is not configured.").await?;
                         },
                         Some(bao) => {
-                            if verify_totp(&bao.totp_secret, &code) {
-                                info!("TOTP verified for /unseal (chat {})", msg.chat.id.0);
-                                match bao.client.unseal(&bao.unseal_key).await {
-                                    Ok(status) => {
-                                        if status.sealed {
-                                            error!("Unseal incomplete: still sealed (progress {}/{})", status.progress, status.t);
-                                            bot.send_message(msg.chat.id, format!("⚠️ Key accepted, still sealed (progress {}/{})", status.progress, status.t)).await?;
-                                        } else {
-                                            info!("OpenBao unsealed via Telegram (chat {})", msg.chat.id.0);
-                                            bot.send_message(msg.chat.id, "🔓 OpenBao is now unsealed.").await?;
+                            match decrypt_ciphertext(&ciphertext, &session.identity) {
+                                Ok(key) => {
+                                    info!("Unseal session {}: ciphertext decrypted (chat {})", session.session_id, msg.chat.id.0);
+                                    match bao.client.unseal(key.trim()).await {
+                                        Ok(status) => {
+                                            if status.sealed {
+                                                error!("Unseal session {}: key accepted, still sealed (progress {}/{})", session.session_id, status.progress, status.t);
+                                                bot.send_message(msg.chat.id, format!("⚠️ Key accepted, still sealed (progress {}/{})", status.progress, status.t)).await?;
+                                            } else {
+                                                info!("Unseal session {}: OpenBao unsealed via Telegram (chat {})", session.session_id, msg.chat.id.0);
+                                                bot.send_message(msg.chat.id, "🔓 OpenBao is now unsealed.").await?;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            error!("Unseal session {}: unseal API call failed: {}", session.session_id, e);
+                                            bot.send_message(msg.chat.id, format!("Unseal failed: {}", e)).await?;
                                         }
-                                    },
-                                    Err(e) => {
-                                        error!("Unseal API call failed: {}", e);
-                                        bot.send_message(msg.chat.id, format!("Unseal failed: {}", e)).await?;
                                     }
+                                },
+                                Err(e) => {
+                                    warn!("Unseal session {}: decryption failed (chat {}): {}", session.session_id, msg.chat.id.0, e);
+                                    bot.send_message(msg.chat.id, format!("❌ Decryption failed: {}. Call /unseal for a new link.", e)).await?;
                                 }
-                            } else {
-                                warn!("Invalid TOTP code for /unseal from chat {}", msg.chat.id.0);
-                                bot.send_message(msg.chat.id, "❌ Invalid TOTP code. Call /unseal again.").await?;
                             }
                         }
                     }
@@ -881,9 +895,9 @@ async fn main() {
     // OpenBao unseal support (optional)
     let bao_config: Arc<Option<BaoConfig>> = Arc::new(BaoConfig::from_env());
     if bao_config.is_none() {
-        info!("OpenBao unseal support disabled (STB_BAO_ADDR / STB_BAO_UNSEAL_KEY / STB_UNSEAL_TOTP_SECRET not fully set)");
+        info!("OpenBao unseal support disabled (STB_BAO_ADDR / STB_UNSEAL_WEB_URL not fully set)");
     }
-    let pending_unseal: Arc<Mutex<Option<PendingUnseal>>> = Arc::new(Mutex::new(None));
+    let pending_unseal: Arc<Mutex<Option<UnsealSession>>> = Arc::new(Mutex::new(None));
 
     info!("Initializing bot ()...");
     let bot = Bot::new(bot_token);

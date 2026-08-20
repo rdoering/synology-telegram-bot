@@ -1,8 +1,6 @@
 use reqwest::Client;
 use serde::Deserialize;
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
-use totp_lite::{totp_custom, Sha1};
 
 #[derive(Debug)]
 pub enum BaoError {
@@ -84,70 +82,96 @@ impl BaoClient {
     }
 }
 
-/// TOTP verification (RFC 6238, SHA1, 30s step, 6 digits) with +/-1 step tolerance
-/// for clock drift and typing time. Accepts base32 secrets with or without padding.
-pub fn verify_totp(secret_b32: &str, code: &str) -> bool {
-    let cleaned: String = secret_b32
-        .trim()
-        .trim_end_matches('=')
-        .replace(' ', "")
-        .to_uppercase();
-    let Some(secret) = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &cleaned) else {
-        return false;
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let code = code.trim();
-    for window in [now.saturating_sub(30), now, now + 30] {
-        if totp_custom::<Sha1>(30, 6, &secret, window) == code {
-            return true;
-        }
-    }
-    false
+/// Ephemeral X25519 keypair for one unseal challenge (lives only in RAM).
+pub struct EphemeralKey {
+    pub identity: age::x25519::Identity,
+    pub recipient: String,
+}
+
+pub fn generate_ephemeral_key() -> EphemeralKey {
+    let identity = age::x25519::Identity::generate();
+    let recipient = identity.to_public().to_string();
+    EphemeralKey { identity, recipient }
+}
+
+/// Random URL-safe session reference (16 bytes hex).
+pub fn random_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::Rng::fill(&mut rand::thread_rng(), &mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Decrypt an age-armored ciphertext with an ephemeral identity.
+pub fn decrypt_ciphertext(
+    ciphertext: &str,
+    identity: &age::x25519::Identity,
+) -> Result<String, BaoError> {
+    use std::io::Read;
+
+    let armored = age::armor::ArmoredReader::new(ciphertext.as_bytes());
+    let decryptor = age::Decryptor::new(armored)
+        .map_err(|e| BaoError::Api(format!("invalid age ciphertext: {}", e)))?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(|e| BaoError::Api(format!("decryption failed: {}", e)))?;
+    let mut buf = String::new();
+    reader
+        .read_to_string(&mut buf)
+        .map_err(|e| BaoError::Api(format!("read failed: {}", e)))?;
+    Ok(buf)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // RFC 6238 test key (ASCII "12345678901234567890"), base32-encoded
-    const RFC_SECRET_B32: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-
     #[test]
-    fn totp_matches_rfc6238_vector() {
-        let secret = base32::decode(
-            base32::Alphabet::RFC4648 { padding: false },
-            RFC_SECRET_B32,
+    fn age_roundtrip() {
+        let key = generate_ephemeral_key();
+        let recipient: age::x25519::Recipient = key.recipient.parse().expect("valid recipient");
+        let encryptor = age::Encryptor::with_recipients(
+            std::iter::once(&recipient as &dyn age::Recipient),
+        ).expect("encryptor");
+        let mut ciphertext = vec![];
+        {
+            use std::io::Write;
+            let armor = age::armor::ArmoredWriter::wrap_output(
+                &mut ciphertext,
+                age::armor::Format::AsciiArmor,
+            )
+            .unwrap();
+            let mut writer = encryptor.wrap_output(armor).unwrap();
+            writer.write_all(b"roundtrip-secret").unwrap();
+            writer.finish().unwrap().finish().unwrap();
+        }
+        let decrypted = decrypt_ciphertext(
+            &String::from_utf8(ciphertext).unwrap(),
+            &key.identity,
         )
         .unwrap();
-        // RFC 6238 SHA1, T=59s, 6 digits: 287082
-        assert_eq!(totp_custom::<Sha1>(30, 6, &secret, 59), "287082");
+        assert_eq!(decrypted, "roundtrip-secret");
     }
 
+    /// Interop: ciphertext produced by the official age JS implementation
+    /// (same library the web app bundles) must be decryptable here.
     #[test]
-    fn verify_accepts_current_code() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    fn decrypts_js_produced_ciphertext() {
+        let fixture = include_str!("../tests/fixtures/js-ciphertext.json");
+        let v: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let identity: age::x25519::Identity = v["identity"]
+            .as_str()
             .unwrap()
-            .as_secs();
-        let secret = base32::decode(
-            base32::Alphabet::RFC4648 { padding: false },
-            RFC_SECRET_B32,
-        )
-        .unwrap();
-        let code = totp_custom::<Sha1>(30, 6, &secret, now);
-        assert!(verify_totp(RFC_SECRET_B32, &code));
+            .parse()
+            .expect("valid identity in fixture");
+        let decrypted = decrypt_ciphertext(v["ciphertext"].as_str().unwrap(), &identity)
+            .expect("js ciphertext must decrypt");
+        assert_eq!(decrypted, "test-secret-123");
     }
 
     #[test]
-    fn verify_rejects_wrong_code() {
-        assert!(!verify_totp(RFC_SECRET_B32, "000000"));
-    }
-
-    #[test]
-    fn verify_rejects_garbage_secret() {
-        assert!(!verify_totp("!!!not-base32!!!", "123456"));
+    fn session_id_is_32_hex_chars() {
+        let id = random_session_id();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
