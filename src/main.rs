@@ -22,9 +22,10 @@ struct BaoConfig {
 
 impl BaoConfig {
     fn from_env() -> Option<Self> {
-        let addr = std::env::var("STB_BAO_ADDR").ok()?;
-        let unseal_key = std::env::var("STB_BAO_UNSEAL_KEY").ok()?;
-        let totp_secret = std::env::var("STB_UNSEAL_TOTP_SECRET").ok()?;
+        // Note: compose always defines these vars (possibly empty) — treat empty as unset.
+        let addr = std::env::var("STB_BAO_ADDR").ok().filter(|v| !v.is_empty())?;
+        let unseal_key = std::env::var("STB_BAO_UNSEAL_KEY").ok().filter(|v| !v.is_empty())?;
+        let totp_secret = std::env::var("STB_UNSEAL_TOTP_SECRET").ok().filter(|v| !v.is_empty())?;
         info!("OpenBao unseal support enabled (addr: {})", addr);
         Some(BaoConfig {
             client: BaoClient::new(&addr),
@@ -163,7 +164,7 @@ fn create_ssh_menu(ssh_enabled: bool) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(keyboard)
 }
 
-#[derive(BotCommands, Clone)]
+#[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "snake_case", description = "Available commands:")]
 enum Command {
     #[command(description = "Start the bot.")]
@@ -204,6 +205,7 @@ async fn answer_command(
 
         return Ok(());
     }
+    info!("Command {:?} received from chat {}", cmd, msg.chat.id.0);
     match cmd {
         Command::Start => {
             // Create the main menu keyboard
@@ -253,12 +255,14 @@ async fn answer_command(
                             if command == "on" || command == "enable" {
                                 match client.toggle_ssh(true).await {
                                     Ok(_) => {
+                                        info!("SSH service enabled by chat {}", msg.chat.id.0);
                                         bot.send_message(
                                             msg.chat.id,
                                             "SSH service has been enabled"
                                         ).await?;
                                     },
                                     Err(e) => {
+                                        error!("Failed to enable SSH service: {}", e);
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to enable SSH service: {}", e)
@@ -268,12 +272,14 @@ async fn answer_command(
                             } else if command == "off" || command == "disable" {
                                 match client.toggle_ssh(false).await {
                                     Ok(_) => {
+                                        info!("SSH service disabled by chat {}", msg.chat.id.0);
                                         bot.send_message(
                                             msg.chat.id,
                                             "SSH service has been disabled"
                                         ).await?;
                                     },
                                     Err(e) => {
+                                        error!("Failed to disable SSH service: {}", e);
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to disable SSH service: {}", e)
@@ -310,9 +316,11 @@ async fn answer_command(
                     if let Some(client) = &mut config.client {
                         match client.toggle_ssh(true).await {
                             Ok(_) => {
+                                info!("SSH service enabled by chat {}", msg.chat.id.0);
                                 bot.send_message(msg.chat.id, "SSH service has been enabled").await?;
                             },
                             Err(e) => {
+                                error!("Failed to enable SSH service: {}", e);
                                 bot.send_message(msg.chat.id, format!("Failed to enable SSH service: {}", e)).await?;
                             }
                         }
@@ -333,9 +341,11 @@ async fn answer_command(
                     if let Some(client) = &mut config.client {
                         match client.toggle_ssh(false).await {
                             Ok(_) => {
+                                info!("SSH service disabled by chat {}", msg.chat.id.0);
                                 bot.send_message(msg.chat.id, "SSH service has been disabled").await?;
                             },
                             Err(e) => {
+                                error!("Failed to disable SSH service: {}", e);
                                 bot.send_message(msg.chat.id, format!("Failed to disable SSH service: {}", e)).await?;
                             }
                         }
@@ -386,6 +396,7 @@ async fn answer_command(
                             } else if !status.sealed {
                                 bot.send_message(msg.chat.id, "OpenBao is already unsealed.").await?;
                             } else {
+                                info!("TOTP challenge for /unseal started (chat {})", msg.chat.id.0);
                                 *pending_unseal.lock().await = Some(PendingUnseal {
                                     chat_id: msg.chat.id,
                                     since: Instant::now(),
@@ -463,6 +474,7 @@ async fn callback_handler(
         // Get the message and chat ID
         if let Some(message) = q.message {
             let chat_id = message.chat.id;
+            info!("Callback '{}' received from chat {}", data, chat_id.0);
 
             match data.as_str() {
                 // Main menu options
@@ -689,15 +701,19 @@ async fn message_handler(
                         },
                         Some(bao) => {
                             if verify_totp(&bao.totp_secret, &code) {
+                                info!("TOTP verified for /unseal (chat {})", msg.chat.id.0);
                                 match bao.client.unseal(&bao.unseal_key).await {
                                     Ok(status) => {
                                         if status.sealed {
+                                            error!("Unseal incomplete: still sealed (progress {}/{})", status.progress, status.t);
                                             bot.send_message(msg.chat.id, format!("⚠️ Key accepted, still sealed (progress {}/{})", status.progress, status.t)).await?;
                                         } else {
+                                            info!("OpenBao unsealed via Telegram (chat {})", msg.chat.id.0);
                                             bot.send_message(msg.chat.id, "🔓 OpenBao is now unsealed.").await?;
                                         }
                                     },
                                     Err(e) => {
+                                        error!("Unseal API call failed: {}", e);
                                         bot.send_message(msg.chat.id, format!("Unseal failed: {}", e)).await?;
                                     }
                                 }
@@ -765,12 +781,14 @@ async fn message_handler(
                             if command == "on" || command == "enable" {
                                 match client.toggle_ssh(true).await {
                                     Ok(_) => {
+                                        info!("SSH service enabled by chat {}", msg.chat.id.0);
                                         bot.send_message(
                                             msg.chat.id,
                                             "SSH service has been enabled"
                                         ).await?;
                                     },
                                     Err(e) => {
+                                        error!("Failed to enable SSH service: {}", e);
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to enable SSH service: {}", e)
@@ -780,12 +798,14 @@ async fn message_handler(
                             } else if command == "off" || command == "disable" {
                                 match client.toggle_ssh(false).await {
                                     Ok(_) => {
+                                        info!("SSH service disabled by chat {}", msg.chat.id.0);
                                         bot.send_message(
                                             msg.chat.id,
                                             "SSH service has been disabled"
                                         ).await?;
                                     },
                                     Err(e) => {
+                                        error!("Failed to disable SSH service: {}", e);
                                         bot.send_message(
                                             msg.chat.id,
                                             format!("Failed to disable SSH service: {}", e)
