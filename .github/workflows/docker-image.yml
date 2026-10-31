@@ -2,13 +2,44 @@ name: Build and Push Docker image
 
 on:
   push:
+    branches:
+      - '**'
     tags:
       - 'v*.*.*'
       - '*.*.*'
+  pull_request:
 
 jobs:
+  test:
+    name: Vet, test, CRAP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just vet
+      - run: just crap
+      - run: just build
+
+  docker-check:
+    name: Docker build (no push)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+
   build:
     name: Build and push
+    needs: [test, docker-check]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment: Github
 

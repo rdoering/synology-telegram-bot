@@ -22,7 +22,11 @@ services:
       # Optional environment variables
       - STB_FORCE_IPV4=${STB_FORCE_IPV4:-false}
       # Set log level (optional)
-      - STB_RUST_LOG=${STB_RUST_LOG:-info}
+      - STB_LOG_LEVEL=${STB_LOG_LEVEL:-info}
+      # OpenBao (optional; both needed to enable unseal, BAO_ADDR alone enables nothing)
+      - STB_BAO_ADDR=${STB_BAO_ADDR:-}
+      - STB_UNSEAL_WEB_URL=${STB_UNSEAL_WEB_URL:-}
+      - STB_BAO_POLL_INTERVAL=${STB_BAO_POLL_INTERVAL:-10s}
     volumes:
       # Optional: Mount a local .env file for development
       - ./.env:/app/.env:ro

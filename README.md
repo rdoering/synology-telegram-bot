@@ -1,256 +1,71 @@
 # Synology Telegram Bot
 
-A Telegram bot for interacting with your Synology NAS, built with Rust.
+A Telegram bot for controlling the SSH service of a Synology NAS and for
+unsealing/monitoring an OpenBao server. Written in Go.
 
 ## Features
 
-- Interactive menu interface for easy navigation
-- Inline query menu in the Telegram input line
-- Command menu button in the chat interface
-- Basic bot commands: /start
-- Synology NAS integration:
-  - Automatic login to your Synology NAS
-  - SSH service control (enable/disable)
-  - Logout from your Synology NAS
-  - Configure Synology NAS connection via environment variables
+- `/start` – main menu (inline keyboard), inline query hint, command menu button
+- SSH control of the NAS: `/ssh [on|off]`, `/ssh_on`, `/ssh_off` or via menu
+- OpenBao (optional):
+  - `/seal_status` – show the current seal status
+  - `/unseal` – link-based unseal: the bot sends a one-time link to the web
+    app, you encrypt the unseal key there with an ephemeral age key and paste
+    the ciphertext back into the chat (valid 5 minutes, single use; the
+    ciphertext message is deleted afterwards)
+  - **Automatic status messages:** after startup the bot posts the current
+    seal status once, and again every time it changes (sealed/unsealed,
+    not initialized, unreachable) – including unexpected changes such as a
+    re-seal after a server restart.
 
-Todo:
-- [ ] Docker image for easy deployment
-- [ ] CI integration for automated testing
-- [ ] Quality assurance with unit tests
-- [ ] A kind of a hello message after the bot starts
-- [ ] Added a description on hub.docker.com
-- [ ] STB_SYNOLOGY_PASSWORD replaced by an secret.]
+Only the chat configured in `STB_ALLOWED_CHAT_ID` may use the bot.
 
-## Prerequisites
+## Configuration
 
-- Rust and Cargo installed
-- A Telegram bot token (obtained from [@BotFather](https://t.me/BotFather))
+Environment variables (a `.env` file is loaded if present; real environment
+variables take precedence):
 
-## Setup
+| Variable | Required | Description |
+|---|---|---|
+| `STB_TELEGRAM_BOT_TOKEN` | yes | Token from [@BotFather](https://t.me/BotFather) |
+| `STB_SYNOLOGY_NAS_BASE_URL` | yes | e.g. `http://192.168.1.100:5000` |
+| `STB_SYNOLOGY_USERNAME` / `STB_SYNOLOGY_PASSWORD` | yes | NAS credentials |
+| `STB_ALLOWED_CHAT_ID` | yes | Telegram chat id allowed to use the bot and receiving status messages |
+| `STB_FORCE_IPV4` | no | `true`/`1` to use IPv4 only |
+| `STB_LOG_LEVEL` | no | `debug`, `info` (default), `warn`, `error` (`STB_RUST_LOG` still accepted) |
+| `STB_BAO_ADDR` | no | OpenBao address, e.g. `http://openbao:8200` |
+| `STB_UNSEAL_WEB_URL` | no | Base URL of the unseal web app. Both `STB_BAO_*` and this one are needed to enable OpenBao features |
+| `STB_BAO_POLL_INTERVAL` | no | Seal status polling interval, Go duration (default `10s`) |
 
-### Option 1: Running Locally
+Empty values count as unset. Passwords with special characters should be
+wrapped in single quotes in `.env`.
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/yourusername/synology-telegram-bot.git
-   cd synology-telegram-bot
-   ```
+## Run
 
-2. Set the required environment variables (or place them in a .env file; values from the real environment take precedence over .env):
-   ```
-   export STB_TELEGRAM_BOT_TOKEN=your_bot_token_here
-   export STB_SYNOLOGY_NAS_BASE_URL=http://your_synology_ip:port
-   export STB_SYNOLOGY_USERNAME=your_synology_username
-   export STB_SYNOLOGY_PASSWORD=your_synology_password
-   export STB_ALLOWED_CHAT_ID=your_telegram_chat_id
-   ```
-   For example:
-   ```
-   export STB_SYNOLOGY_NAS_BASE_URL=http://192.168.1.100:5000
-   export STB_SYNOLOGY_USERNAME=admin
-   export STB_SYNOLOGY_PASSWORD=your_password
-   export STB_ALLOWED_CHAT_ID=123456789
-   ```
+```
+cp .env.example .env   # edit
+go run ./cmd/bot
+```
 
-3. Build and run the bot:
-   ```
-   cargo run
-   ```
+Docker:
 
-### Option 2: Using Docker Compose
-
-1. Clone this repository:
-   ```
-   git clone https://github.com/yourusername/synology-telegram-bot.git
-   cd synology-telegram-bot
-   ```
-
-2. Copy the example environment file and edit it with your values:
-   ```
-   cp .env.example .env
-   nano .env  # or use your preferred text editor
-   ```
-
-3. Build and start the container:
-   ```
-   docker-compose up -d
-   ```
-
-4. Check the logs:
-   ```
-   docker-compose logs -f
-   ```
-
-5. To stop the container:
-   ```
-   docker-compose down
-   ```
-
-## Usage
-
-Once the bot is running, you can interact with it using either the interactive menu or text commands.
-
-### Interactive Menu
-
-1. Start the bot by sending the `/start` command
-2. The bot will display a menu with the following options:
-   - 🖥️ **SSH Control** - Enable or disable SSH service
-   - 🚪 **Logout** - Logout from your Synology NAS
-
-3. Click on any menu option to proceed with that action
-   - Some options will ask you to enter additional information using text commands
-   - The SSH Control option will display a submenu with options to enable or disable SSH
-
-### Command Menu Button
-
-The bot sets a command menu button in the chat interface, which provides easy access to all available commands:
-
-1. Click on the menu button in the chat interface (usually located at the bottom of the chat)
-2. A list of all available commands will appear
-3. Select a command from the list to send it to the chat
-
-### Inline Menu
-
-The bot also supports inline queries, which allow you to access commands directly from the Telegram input line:
-
-1. Type `@your_bot_username` in any chat
-2. A menu will appear in the input line with available commands
-3. Select a command from the menu to insert it into the chat
-4. Edit the command parameters if needed and send the message
-
-### Text Commands
-
-You can also interact with the bot using the following text commands:
-
-#### Basic Commands
-- `/start` - Start the bot and display the interactive menu
-
-#### Synology Commands
-- `/ssh [on|off]` - Get SSH status or enable/disable SSH service
-- `/logout` - Logout from your Synology NAS
+```
+docker compose up --build
+```
 
 ## Development
 
-### Environment Variables
-
-- `STB_TELEGRAM_BOT_TOKEN` - Your Telegram bot token (required)
-- `STB_SYNOLOGY_NAS_BASE_URL` - Base URL of your Synology NAS (required, e.g. http://your-nas-ip:port)
-- `STB_SYNOLOGY_USERNAME` - Your Synology NAS username (required)
-- `STB_SYNOLOGY_PASSWORD` - Your Synology NAS password (required)
-- `STB_ALLOWED_CHAT_ID` - Your Telegram chat ID that is allowed to use the bot (required)
-- `STB_FORCE_IPV4` - Set to "true" or "1" to force IPv4 connections to the Synology NAS (optional, default: false)
-- `STB_RUST_LOG` - Set the log level (optional, default: info)
-
-#### .env notes (backslashes and special characters)
-
-- The app first tries to load your .env with a strict parser (dotenvy). If that fails due to escaping rules (e.g., values with backslashes like `\\` or sequences like `\w`), it will automatically retry with a lenient loader that treats backslashes literally and does not override existing environment variables.
-- Best practice: if your password contains special characters, wrap it in single quotes in `.env`:
-  - Example: `STB_SYNOLOGY_PASSWORD='Pass\word\With\Special\Chars'`
-- Environment variables from your actual environment always take precedence over values from `.env`.
-
-### Docker Development
-
-#### Building Custom Images
-
-You can build a custom Docker image with a specific version tag:
-
-```bash
-docker build -t synology-telegram-bot:custom-tag --build-arg VERSION=1.0.0 .
+```
+just vet     # go vet
+just test    # tests with coverage
+just crap    # fails if any function has a CRAP score >= 30
+just build   # static binary in bin/
 ```
 
-#### Running with Docker
+Layout: `cmd/bot` (wiring), `internal/bot` (commands, menus, Telegram adapter),
+`internal/synology` (DSM client), `internal/bao` (OpenBao client + age),
+`internal/unseal` (session store), `internal/watch` (seal status monitor),
+`internal/config`, `tools/crap` (CRAP score checker).
 
-To run the container directly with Docker:
-
-```bash
-docker run -d --name synology-telegram-bot \
-  --env-file .env \
-  synology-telegram-bot:latest
-```
-
-#### Docker Compose for Development
-
-The included docker-compose.yml file is configured for local development:
-
-- It mounts a local .env file into the container
-- It sets default values for optional environment variables
-- It configures the container to restart automatically unless stopped manually
-
-To rebuild the container after code changes:
-
-```bash
-docker-compose up -d --build
-```
-
-#### Building on ARM macOS (M1/M2 Macs)
-
-The Dockerfile and docker-compose.yml are configured to support building from ARM macOS (M1/M2 Macs) to both ARM64 and AMD64 Linux containers. By default, when building on ARM macOS, the build will:
-
-1. Use your native ARM64 architecture for the build process (faster compilation)
-2. Target AMD64 architecture for the final container (better compatibility)
-
-To build and run on ARM macOS:
-
-```bash
-# Enable Docker BuildKit for better cross-platform support
-export DOCKER_BUILDKIT=1
-
-# Build and start the container
-docker-compose up -d --build
-```
-
-If you want to explicitly target ARM64 for the final container:
-
-```bash
-# Set the target platform to ARM64
-export TARGETPLATFORM=linux/arm64
-
-# Build and start the container
-docker-compose up -d --build
-```
-
-Note: The first build might take longer due to cross-compilation setup.
-
-### Known Issues
-
-#### IPv6 Bug in Synology DSM
-
-There is a known issue with IPv6 connections to Synology DSM:
-
-IPv6 sessions do not have permission to access the SYNO.Core.Terminal API, resulting in error code 105 ("The logged in session does not have permission").
-
-If you experience these issues, set the `STB_FORCE_IPV4` environment variable to force the bot to use IPv4 connections:
-
-```
-export STB_FORCE_IPV4=true
-```
-
-### Adding New Features
-
-There are four ways to extend the bot:
-
-1. For simple commands without parameters:
-   - Add a new variant to the `Command` enum in `src/main.rs`
-   - Add a corresponding match arm in the `answer_command` function
-
-2. For commands with parameters:
-   - Add a new condition in the `message_handler` function that checks for your command prefix
-   - Parse the parameters manually using `text.split_whitespace()`
-   - Implement the command logic
-
-3. For adding new menu options:
-   - Add a new constant for the callback data in the constants section
-   - Add a new button to the appropriate menu in the `create_main_menu` or `create_ssh_menu` function
-   - Add a new case to the match statement in the `callback_handler` function to handle the button press
-   - Implement the logic for the new menu option
-
-4. For adding new inline query options:
-   - Modify the `inline_query_handler` function in `src/main.rs`
-   - Add a new `InlineQueryResultArticle` to the results vector
-   - Make sure to wrap the `InputMessageContentText` in `InputMessageContent::Text`
-   - Ensure the result is properly converted to `InlineQueryResult::Article`
-
-## License
-
-MIT
+To add a command, extend `Handler.command` in `internal/bot/handler.go` and
+the `Commands` list in `internal/bot/telegram.go`.
