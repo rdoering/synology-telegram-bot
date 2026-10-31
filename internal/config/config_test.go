@@ -62,3 +62,14 @@ func TestParseIntervalInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsAddr(t *testing.T) {
+	base := map[string]string{"STB_TELEGRAM_BOT_TOKEN": "t", "STB_SYNOLOGY_NAS_BASE_URL": "http://nas"}
+	for in, want := range map[string]string{"": ":9118", "off": "", "FALSE": "", "127.0.0.1:9": "127.0.0.1:9"} {
+		base["STB_METRICS_ADDR"] = in
+		c, err := Load(env(base))
+		if err != nil || c.MetricsAddr != want {
+			t.Errorf("%q: got %q, %v want %q", in, c.MetricsAddr, err, want)
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"filippo.io/age"
 
 	"synology-telegram-bot/internal/bao"
+	"synology-telegram-bot/internal/metrics"
 	"synology-telegram-bot/internal/unseal"
 )
 
@@ -67,12 +68,14 @@ var mainMenu = Keyboard{{{"🖥️ SSH Control", "ssh_menu"}}}
 func (h *Handler) authorized(chat int64) bool { return chat == h.AllowedChat }
 
 func (h *Handler) deny(ctx context.Context, in Incoming) {
+	metrics.Unauthorized.Inc()
 	slog.Warn("unauthorized access attempt", "chat", in.ChatID, "name", in.FirstName)
 	_ = h.M.Send(ctx, in.ChatID, fmt.Sprintf("Hello %s(%d), unfortunately are not authorized to use this bot.", in.FirstName, in.ChatID), nil)
 }
 
 // HandleMessage processes text messages (commands and pending ciphertexts).
 func (h *Handler) HandleMessage(ctx context.Context, in Incoming) {
+	metrics.UpdatesReceived.Inc("message", authLabel(h.authorized(in.ChatID)))
 	if !h.authorized(in.ChatID) {
 		h.deny(ctx, in)
 		return
@@ -84,6 +87,23 @@ func (h *Handler) HandleMessage(ctx context.Context, in Incoming) {
 	if h.Sessions.Pending(in.ChatID) {
 		h.ciphertext(ctx, in)
 	}
+}
+
+func authLabel(ok bool) string {
+	if ok {
+		return "true"
+	}
+	return "false"
+}
+
+// commandLabel keeps the cmd label within the known command set.
+func commandLabel(cmd string) string {
+	for _, c := range metrics.CommandNames {
+		if c == cmd {
+			return cmd
+		}
+	}
+	return "other"
 }
 
 func parseCommand(text string) (cmd, arg string, ok bool) {
@@ -101,6 +121,7 @@ func (h *Handler) reply(ctx context.Context, in Incoming, text string) {
 
 func (h *Handler) command(ctx context.Context, in Incoming, cmd, arg string) {
 	slog.Info("command", "cmd", cmd, "chat", in.ChatID)
+	metrics.Commands.Inc(commandLabel(cmd))
 	switch cmd {
 	case "start":
 		_ = h.M.Send(ctx, in.ChatID, fmt.Sprintf("Welcome %s to your personal Telegram bot! %s", in.FirstName, mainMenuText), mainMenu)
@@ -218,6 +239,7 @@ func unsealBlocker(st bao.SealStatus, err error) string {
 func (h *Handler) ciphertext(ctx context.Context, in Incoming) {
 	sess, res := h.Sessions.Take(in.ChatID)
 	if res == unseal.Expired {
+		metrics.Unseals.Inc("expired")
 		h.reply(ctx, in, "Unseal session expired. Call /unseal again for a new link.")
 		return
 	}
@@ -234,20 +256,25 @@ const ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----"
 
 func (h *Handler) finishUnseal(ctx context.Context, sess unseal.Session, text string) string {
 	if !strings.HasPrefix(strings.TrimSpace(text), ageHeader) {
+		metrics.Unseals.Inc("invalid")
 		return "That was not an age ciphertext. Please encrypt the token in the web app and send the encrypted text. Call /unseal for a new link."
 	}
 	key, err := bao.DecryptCiphertext(text, sess.Identity)
 	if err != nil {
+		metrics.Unseals.Inc("decrypt_failed")
 		return fmt.Sprintf("❌ Decryption failed: %v. Call /unseal for a new link.", err)
 	}
 	st, err := h.Bao.Unseal(ctx, strings.TrimSpace(key))
 	slog.Info("unseal attempt", "session", sess.ID, "ok", err == nil)
 	switch {
 	case err != nil:
+		metrics.Unseals.Inc("rejected")
 		return fmt.Sprintf("Unseal failed: %v", err)
 	case st.Sealed:
+		metrics.Unseals.Inc("partial")
 		return fmt.Sprintf("⚠️ Key accepted, still sealed (progress %d/%d)", st.Progress, st.T)
 	}
+	metrics.Unseals.Inc("ok")
 	return "🔓 OpenBao is now unsealed."
 }
 
@@ -261,7 +288,9 @@ func sshMenu(enabled bool) (string, Keyboard) {
 
 // HandleCallback processes inline keyboard button presses.
 func (h *Handler) HandleCallback(ctx context.Context, in Incoming) {
+	metrics.UpdatesReceived.Inc("callback", authLabel(h.authorized(in.ChatID)))
 	if !h.authorized(in.ChatID) {
+		metrics.Unauthorized.Inc()
 		_ = h.M.AnswerCallback(ctx, in.ID, "You are not authorized to use this bot.", true)
 		return
 	}
@@ -303,6 +332,7 @@ func (h *Handler) toggleCallback(ctx context.Context, in Incoming, enable bool) 
 
 // HandleInline answers inline queries with a pointer to /start.
 func (h *Handler) HandleInline(ctx context.Context, in Incoming) {
+	metrics.UpdatesReceived.Inc("inline", "na")
 	_ = h.M.AnswerInline(ctx, in.ID)
 }
 

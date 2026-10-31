@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"synology-telegram-bot/internal/metrics"
 )
 
 var busy = "The network connection is unstable or the system is busy."
@@ -126,6 +128,23 @@ func (c *Client) logout(ctx context.Context, sid string) {
 	_, _ = c.call(ctx, url.Values{"api": {"SYNO.API.Auth"}, "version": {"3"}, "method": {"logout"}, "_sid": {sid}})
 }
 
+// record counts one DSM operation, its duration and (on failure) the error code.
+func record(op string, start time.Time, err error) {
+	metrics.SynologyDuration.Observe(time.Since(start).Seconds(), op)
+	if err == nil {
+		metrics.SynologyRequests.Inc(op, "ok")
+		metrics.SynologyLastSuccess.Set(float64(time.Now().Unix()))
+		return
+	}
+	metrics.SynologyRequests.Inc(op, "error")
+	code := "other"
+	var de *Error
+	if errors.As(err, &de) {
+		code = fmt.Sprint(de.Code)
+	}
+	metrics.SynologyErrors.Inc(code)
+}
+
 // session runs fn with a fresh session id and always logs out afterwards.
 func (c *Client) session(ctx context.Context, fn func(sid string) error) error {
 	c.mu.Lock()
@@ -139,9 +158,9 @@ func (c *Client) session(ctx context.Context, fn func(sid string) error) error {
 }
 
 // SSHEnabled returns whether the SSH service is enabled.
-func (c *Client) SSHEnabled(ctx context.Context) (bool, error) {
-	var enabled bool
-	err := c.session(ctx, func(sid string) error {
+func (c *Client) SSHEnabled(ctx context.Context) (enabled bool, err error) {
+	defer func(start time.Time) { record("ssh_status", start, err) }(time.Now())
+	err = c.session(ctx, func(sid string) error {
 		r, err := c.call(ctx, url.Values{"api": {"SYNO.Core.Terminal"}, "version": {"1"}, "method": {"get"}, "_sid": {sid}})
 		if err != nil {
 			return err
@@ -171,7 +190,8 @@ func parseSSH(data json.RawMessage) bool {
 }
 
 // SetSSH enables or disables the SSH service.
-func (c *Client) SetSSH(ctx context.Context, enable bool) error {
+func (c *Client) SetSSH(ctx context.Context, enable bool) (err error) {
+	defer func(start time.Time) { record("ssh_set", start, err) }(time.Now())
 	return c.session(ctx, func(sid string) error {
 		_, err := c.call(ctx, url.Values{"api": {"SYNO.Core.Terminal"}, "version": {"1"}, "method": {"set"}, "enable_ssh": {fmt.Sprint(enable)}, "_sid": {sid}})
 		return err

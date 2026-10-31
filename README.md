@@ -36,6 +36,7 @@ variables take precedence):
 | `STB_BAO_ADDR` | no | OpenBao address, e.g. `http://openbao:8200` |
 | `STB_UNSEAL_WEB_URL` | no | Base URL of the unseal web app. Both `STB_BAO_*` and this one are needed to enable OpenBao features |
 | `STB_BAO_POLL_INTERVAL` | no | Seal status polling interval, Go duration (default `10s`) |
+| `STB_METRICS_ADDR` | no | Listen address of the Prometheus `/metrics` + `/healthz` endpoint (default `:9118`, `off` disables it) |
 
 Empty values count as unset. Passwords with special characters should be
 wrapped in single quotes in `.env`.
@@ -69,3 +70,25 @@ Layout: `cmd/bot` (wiring), `internal/bot` (commands, menus, Telegram adapter),
 
 To add a command, extend `Handler.command` in `internal/bot/handler.go` and
 the `Commands` list in `internal/bot/telegram.go`.
+
+## Metrics
+
+The bot exposes Prometheus metrics on `STB_METRICS_ADDR` (default `:9118`, path
+`/metrics`; `/healthz` for liveness). No authentication – publish the port only
+inside the trusted network.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `stb_build_info` | `version` | build version (value 1) |
+| `stb_start_time_seconds` | – | process start time |
+| `stb_telegram_updates_received_total` | `type`, `authorized` | updates received from users |
+| `stb_commands_total` | `cmd` | commands from the allowed chat |
+| `stb_unauthorized_attempts_total` | – | requests from chats that are not allowed |
+| `stb_telegram_messages_sent_total` / `stb_telegram_send_errors_total` | `kind` | Telegram API calls / failures |
+| `stb_synology_requests_total` | `op`, `result` | DSM operations (`ssh_status`, `ssh_set`) |
+| `stb_synology_errors_total` | `code` | DSM error code (`other` = non-DSM error) |
+| `stb_synology_last_success_timestamp_seconds` | – | last successful DSM operation |
+| `stb_synology_request_duration_seconds_{sum,count}` | `op` | DSM operation duration |
+| `stb_bao_polls_total` | `result` | OpenBao seal status polls |
+| `stb_bao_state` | `state` | current OpenBao state (one-hot) |
+| `stb_unseal_attempts_total` | `result` | unseal attempts by outcome |

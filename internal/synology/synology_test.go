@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"synology-telegram-bot/internal/metrics"
 )
 
 // fakeDSM answers login/logout/get/set; terminal is the JSON for method=get.
@@ -122,5 +124,36 @@ func TestErrorDescriptions(t *testing.T) {
 	}
 	if apiError(response{}).Error() == "" {
 		t.Fatal("error without code")
+	}
+}
+
+func TestMetricsRecorded(t *testing.T) {
+	okBefore := metrics.SynologyRequests.Value("ssh_status", "ok")
+	errBefore := metrics.SynologyRequests.Value("ssh_set", "error")
+	code105 := metrics.SynologyErrors.Value("105")
+
+	c, _ := fakeDSM(t, `{"success":true,"data":{}}`, false)
+	if _, err := c.SSHEnabled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetSSH(context.Background(), true); err == nil {
+		t.Fatal("expected DSM error 105")
+	}
+	if metrics.SynologyRequests.Value("ssh_status", "ok") != okBefore+1 ||
+		metrics.SynologyRequests.Value("ssh_set", "error") != errBefore+1 ||
+		metrics.SynologyErrors.Value("105") != code105+1 {
+		t.Fatal("counters not updated")
+	}
+	if metrics.SynologyLastSuccess.Value() == 0 {
+		t.Fatal("last success not set")
+	}
+
+	other := metrics.SynologyErrors.Value("other")
+	bad := New("http://127.0.0.1:1", "u", "pw", true)
+	if _, err := bad.SSHEnabled(context.Background()); err == nil {
+		t.Fatal("expected network error")
+	}
+	if metrics.SynologyErrors.Value("other") != other+1 {
+		t.Fatal("non-DSM error not counted as other")
 	}
 }

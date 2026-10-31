@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	tg "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -16,10 +17,14 @@ import (
 	"synology-telegram-bot/internal/bao"
 	"synology-telegram-bot/internal/bot"
 	"synology-telegram-bot/internal/config"
+	"synology-telegram-bot/internal/metrics"
 	"synology-telegram-bot/internal/synology"
 	"synology-telegram-bot/internal/unseal"
 	"synology-telegram-bot/internal/watch"
 )
+
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -56,6 +61,9 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	metrics.BuildInfo.Set(1, version)
+	metrics.StartTime.Set(float64(time.Now().Unix()))
+	metrics.Serve(ctx, cfg.MetricsAddr)
 	registerMenu(ctx, b)
 	if bc != nil {
 		go watch.New(bc, h).Run(ctx, cfg.BaoPollInterval)

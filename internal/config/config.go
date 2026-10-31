@@ -21,6 +21,7 @@ type Config struct {
 	BaoAddr         string
 	UnsealWebURL    string
 	BaoPollInterval time.Duration
+	MetricsAddr     string
 }
 
 // BaoEnabled reports whether OpenBao support is configured.
@@ -40,6 +41,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.AllowedChatID, _ = strconv.ParseInt(getenv("STB_ALLOWED_CHAT_ID"), 10, 64)
 	c.BaoPollInterval = parseInterval(getenv("STB_BAO_POLL_INTERVAL"))
+	c.MetricsAddr = metricsAddr(getenv("STB_METRICS_ADDR"))
 	return c, c.validate()
 }
 
@@ -54,6 +56,17 @@ func (c Config) validate() error {
 		return errors.New("STB_SYNOLOGY_NAS_BASE_URL is required")
 	}
 	return nil
+}
+
+// metricsAddr defaults to :9118; "off" disables the endpoint.
+func metricsAddr(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return ":9118"
+	case "off", "false", "0":
+		return ""
+	}
+	return strings.TrimSpace(v)
 }
 
 func parseBool(v string) bool {

@@ -5,6 +5,8 @@ import (
 
 	tg "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"synology-telegram-bot/internal/metrics"
 )
 
 // Commands registered in the Telegram command menu.
@@ -19,6 +21,15 @@ var Commands = []models.BotCommand{
 
 // Telegram implements Messenger on top of go-telegram/bot.
 type Telegram struct{ B *tg.Bot }
+
+// track counts one Telegram API call and its failure, and passes err through.
+func track(kind string, err error) error {
+	metrics.MessagesSent.Inc(kind)
+	if err != nil {
+		metrics.SendErrors.Inc(kind)
+	}
+	return err
+}
 
 func markup(kb Keyboard) models.ReplyMarkup {
 	if kb == nil {
@@ -35,7 +46,7 @@ func markup(kb Keyboard) models.ReplyMarkup {
 
 func (t Telegram) Send(ctx context.Context, chat int64, text string, kb Keyboard) error {
 	_, err := t.B.SendMessage(ctx, &tg.SendMessageParams{ChatID: chat, Text: text, ReplyMarkup: markup(kb)})
-	return err
+	return track("send", err)
 }
 
 func (t Telegram) Edit(ctx context.Context, chat int64, msgID int, text string, kb Keyboard) error {
@@ -44,12 +55,12 @@ func (t Telegram) Edit(ctx context.Context, chat int64, msgID int, text string, 
 		p.ReplyMarkup = m
 	}
 	_, err := t.B.EditMessageText(ctx, p)
-	return err
+	return track("edit", err)
 }
 
 func (t Telegram) AnswerCallback(ctx context.Context, id, text string, alert bool) error {
 	_, err := t.B.AnswerCallbackQuery(ctx, &tg.AnswerCallbackQueryParams{CallbackQueryID: id, Text: text, ShowAlert: alert})
-	return err
+	return track("answer_callback", err)
 }
 
 func (t Telegram) AnswerInline(ctx context.Context, id string) error {
@@ -60,12 +71,12 @@ func (t Telegram) AnswerInline(ctx context.Context, id string) error {
 			InputMessageContent: &models.InputTextMessageContent{MessageText: "Use /start to see the menu"},
 		}},
 	})
-	return err
+	return track("answer_inline", err)
 }
 
 func (t Telegram) Delete(ctx context.Context, chat int64, msgID int) error {
 	_, err := t.B.DeleteMessage(ctx, &tg.DeleteMessageParams{ChatID: chat, MessageID: msgID})
-	return err
+	return track("delete", err)
 }
 
 // Route converts a Telegram update into a Handler call.

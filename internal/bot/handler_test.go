@@ -12,6 +12,7 @@ import (
 	"filippo.io/age/armor"
 
 	"synology-telegram-bot/internal/bao"
+	"synology-telegram-bot/internal/metrics"
 	"synology-telegram-bot/internal/unseal"
 )
 
@@ -308,5 +309,28 @@ func TestParseCommand(t *testing.T) {
 	cmd, arg, ok := parseCommand("/ssh@bot  ON ")
 	if !ok || cmd != "ssh" || arg != "on" {
 		t.Fatal(cmd, arg)
+	}
+}
+
+func TestMetricsCounted(t *testing.T) {
+	h, _, _, _ := setup()
+	ctx := context.Background()
+	msgOK := metrics.UpdatesReceived.Value("message", "true")
+	msgBad := metrics.UpdatesReceived.Value("message", "false")
+	unauth := metrics.Unauthorized.Value()
+	ssh := metrics.Commands.Value("ssh")
+	other := metrics.Commands.Value("other")
+
+	h.HandleMessage(ctx, msg("/ssh"))
+	h.HandleMessage(ctx, msg("/nonsense"))
+	h.HandleMessage(ctx, Incoming{ChatID: 99, Text: "/ssh"})
+	h.HandleCallback(ctx, Incoming{ChatID: 99, ID: "c", Data: "ssh_on"})
+
+	if metrics.UpdatesReceived.Value("message", "true") != msgOK+2 ||
+		metrics.UpdatesReceived.Value("message", "false") != msgBad+1 ||
+		metrics.Unauthorized.Value() != unauth+2 ||
+		metrics.Commands.Value("ssh") != ssh+1 ||
+		metrics.Commands.Value("other") != other+1 {
+		t.Fatal("counters not updated")
 	}
 }

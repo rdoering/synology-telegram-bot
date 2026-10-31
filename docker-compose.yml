@@ -10,6 +10,7 @@ services:
       args:
         BUILDPLATFORM: ${BUILDPLATFORM:-linux/arm64}  # Default to ARM64 for M1/M2 Macs
         TARGETPLATFORM: ${TARGETPLATFORM:-linux/amd64}  # Default target is amd64
+        STB_VERSION: ${STB_VERSION:-dev}
     container_name: synology-telegram-bot
     restart: unless-stopped
     environment:

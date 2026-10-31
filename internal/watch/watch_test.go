@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"synology-telegram-bot/internal/bao"
+	"synology-telegram-bot/internal/metrics"
 )
 
 type fakeSrc struct {
@@ -71,5 +72,22 @@ func TestRunPollsUntilCancelled(t *testing.T) {
 	<-done
 	if len(out.msgs) != 1 {
 		t.Fatalf("got %v", out.msgs)
+	}
+}
+
+func TestBaoStateMetric(t *testing.T) {
+	src := &fakeSrc{st: bao.SealStatus{Initialized: true, Sealed: true}}
+	m := New(src, &fakeOut{})
+	okBefore := metrics.BaoPolls.Value("ok")
+	errBefore := metrics.BaoPolls.Value("error")
+
+	m.Tick(context.Background())
+	if metrics.BaoState.Value("sealed") != 1 || metrics.BaoState.Value("unsealed") != 0 || metrics.BaoPolls.Value("ok") != okBefore+1 {
+		t.Fatal("sealed state not exported")
+	}
+	src.err = errors.New("down")
+	m.Tick(context.Background())
+	if metrics.BaoState.Value("unreachable") != 1 || metrics.BaoState.Value("sealed") != 0 || metrics.BaoPolls.Value("error") != errBefore+1 {
+		t.Fatal("unreachable state not exported")
 	}
 }
