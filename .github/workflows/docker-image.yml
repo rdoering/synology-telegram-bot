@@ -62,5 +62,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            STB_VERSION=${{ github.ref_name }}
           tags: |
             dfgnasd/synology-telegram-bot:${{ github.ref_name }}
